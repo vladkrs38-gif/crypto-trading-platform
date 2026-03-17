@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VPN Dashboard — proplatforma.ru</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root { color-scheme: dark; }
+    body { background: #0b1020; }
+    .card { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+  </style>
+</head>
+<body class="min-h-screen text-white">
+  <div class="max-w-6xl mx-auto px-4 py-8">
+    <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
+      <div>
+        <div class="text-sm text-white/60">proplatforma.ru</div>
+        <h1 class="text-3xl font-black tracking-tight">VPN Dashboard</h1>
+        <p class="text-white/70 mt-2">Пользователи, ключи VLESS Reality и базовая статистика подключений.</p>
+      </div>
+      <div class="card rounded-2xl p-4 w-full md:w-[420px]">
+        <div class="text-xs uppercase tracking-widest text-white/60 font-bold">Admin token</div>
+        <div class="mt-2 flex gap-2">
+          <input id="token" class="w-full rounded-xl bg-black/30 border border-white/10 px-3 py-2 text-sm outline-none focus:border-white/20 mono" placeholder="Вставь VPN_ADMIN_TOKEN" />
+          <button id="saveToken" class="rounded-xl bg-white text-black font-bold px-4 py-2 text-sm">Сохранить</button>
+        </div>
+        <div id="tokenHint" class="text-xs text-white/50 mt-2">
+          Токен хранится локально в браузере. Нужен для доступа к API `/api/vpn/*`.
+        </div>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-8">
+      <div class="card rounded-2xl p-5 lg:col-span-1">
+        <div class="flex items-center justify-between">
+          <h2 class="font-black text-lg">Новый пользователь</h2>
+          <button id="refresh" class="text-xs px-3 py-1.5 rounded-xl border border-white/10 hover:border-white/20 text-white/80">Обновить</button>
+        </div>
+        <div class="mt-4">
+          <label class="text-xs uppercase tracking-widest text-white/60 font-bold">Имя (как у тебя в контактах)</label>
+          <input id="newName" class="mt-2 w-full rounded-xl bg-black/30 border border-white/10 px-3 py-2 text-sm outline-none focus:border-white/20" placeholder="Напр. Илья / Саша / Мама" />
+          <button id="create" class="mt-3 w-full rounded-xl bg-emerald-400 text-black font-black px-4 py-2.5">Создать и сгенерировать ключ</button>
+        </div>
+        <div id="createResult" class="mt-4 hidden">
+          <div class="text-xs uppercase tracking-widest text-white/60 font-bold">Ключ VLESS (Reality)</div>
+          <div class="mt-2 p-3 rounded-xl bg-black/30 border border-white/10">
+            <div id="createLink" class="mono text-xs break-all text-white/90"></div>
+          </div>
+          <div class="mt-2 flex gap-2">
+            <button id="copyLink" class="flex-1 rounded-xl bg-white text-black font-bold px-4 py-2 text-sm">Скопировать</button>
+            <a id="openLink" class="flex-1 text-center rounded-xl border border-white/15 hover:border-white/25 px-4 py-2 text-sm" href="#" target="_blank">Открыть</a>
+          </div>
+          <div class="text-xs text-white/50 mt-2">Отправь другу ключ. В v2RayTun он импортируется напрямую.</div>
+        </div>
+        <div id="errorBox" class="mt-4 hidden rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200"></div>
+      </div>
+
+      <div class="card rounded-2xl p-5 lg:col-span-2">
+        <div class="flex items-center justify-between gap-3">
+          <h2 class="font-black text-lg">Пользователи</h2>
+          <div class="flex gap-2">
+            <button id="loadUsers" class="rounded-xl bg-white text-black font-bold px-4 py-2 text-sm">Список</button>
+            <button id="loadStats" class="rounded-xl border border-white/15 hover:border-white/25 px-4 py-2 text-sm">Статистика</button>
+          </div>
+        </div>
+
+        <div class="mt-4 overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="text-white/60">
+              <tr>
+                <th class="text-left py-2 pr-3">Имя</th>
+                <th class="text-left py-2 pr-3">Статус</th>
+                <th class="text-left py-2 pr-3">Последний IP</th>
+                <th class="text-left py-2 pr-3">Conn</th>
+                <th class="text-right py-2 pr-3">↓ Download</th>
+                <th class="text-right py-2 pr-3">↑ Upload</th>
+                <th class="text-right py-2 pr-3">Σ Всего</th>
+                <th class="text-right py-2">Действия</th>
+              </tr>
+            </thead>
+            <tbody id="rows" class="align-top"></tbody>
+          </table>
+        </div>
+
+        <div class="mt-4 text-xs text-white/50">
+          Статистика — best-effort из `/var/log/xray/access.log`. Для точного трафика нужны xray stats API.
+        </div>
+      </div>
+    </div>
+
+    <div class="card rounded-2xl p-6 mt-8">
+      <h2 class="font-black text-lg">Инструкция: как подключиться</h2>
+      <div class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-white/80">
+        <div class="p-4 rounded-2xl bg-black/30 border border-white/10">
+          <div class="font-bold">iPhone (iOS)</div>
+          <ol class="list-decimal ml-5 mt-2 space-y-1">
+            <li>Установи <span class="font-bold">v2RayTun</span> из App Store.</li>
+            <li>Нажми <span class="font-bold">+</span> → импорт и вставь ключ <span class="mono">vless://…</span>.</li>
+            <li>Выбери конфигурацию и нажми кнопку питания.</li>
+          </ol>
+          <div class="mt-2 text-xs text-white/50">App Store: <a class="underline" href="https://apps.apple.com/us/app/v2raytun/id6476628951" target="_blank" rel="noreferrer">v2RayTun</a></div>
+        </div>
+        <div class="p-4 rounded-2xl bg-black/30 border border-white/10">
+          <div class="font-bold">Android</div>
+          <ol class="list-decimal ml-5 mt-2 space-y-1">
+            <li>Поставь клиент V2Ray (например v2rayNG).</li>
+            <li>Импортируй ключ <span class="mono">vless://…</span> через буфер обмена/QR.</li>
+            <li>Подключись.</li>
+          </ol>
+          <div class="mt-2 text-xs text-white/50">Рекомендация: v2rayNG (Google Play / GitHub).</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card rounded-2xl p-6 mt-6">
+      <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+        <div>
+          <h2 class="font-black text-lg">Нагрузка сети (realtime)</h2>
+          <div class="text-sm text-white/70 mt-1">RX/TX по интерфейсу eth0. Обновление раз в 1 секунду.</div>
+        </div>
+        <div class="flex items-center gap-3">
+          <div class="text-xs text-white/60">Сейчас:</div>
+          <div class="mono text-sm">
+            <span class="text-emerald-200">RX</span> <span id="rxNow">—</span>
+            <span class="text-white/40 mx-2">|</span>
+            <span class="text-sky-200">TX</span> <span id="txNow">—</span>
+          </div>
+        </div>
+      </div>
+      <div class="mt-4">
+        <canvas id="netCanvas" height="120" class="w-full rounded-2xl bg-black/30 border border-white/10"></canvas>
+      </div>
+      <div class="mt-2 text-xs text-white/50">Если график пустой — проверь, что введён Admin token и нажми Ctrl+F5.</div>
+    </div>
+  </div>
+
+  <script>
+    const els = {
+      token: document.getElementById('token'),
+      saveToken: document.getElementById('saveToken'),
+      tokenHint: document.getElementById('tokenHint'),
+      newName: document.getElementById('newName'),
+      create: document.getElementById('create'),
+      createResult: document.getElementById('createResult'),
+      createLink: document.getElementById('createLink'),
+      copyLink: document.getElementById('copyLink'),
+      openLink: document.getElementById('openLink'),
+      errorBox: document.getElementById('errorBox'),
+      rows: document.getElementById('rows'),
+      loadUsers: document.getElementById('loadUsers'),
+      loadStats: document.getElementById('loadStats'),
+      refresh: document.getElementById('refresh'),
+    };
+
+    function getToken() {
+      return localStorage.getItem('vpnAdminToken') || '';
+    }
+    function setToken(v) {
+      localStorage.setItem('vpnAdminToken', v);
+    }
+
+    function showError(msg) {
+      els.errorBox.textContent = msg;
+      els.errorBox.classList.remove('hidden');
+    }
+    function clearError() {
+      els.errorBox.classList.add('hidden');
+      els.errorBox.textContent = '';
+    }
+
+    async function api(path, opts = {}) {
+      const token = getToken();
+      const headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+      if (token) headers['X-Admin-Token'] = token;
+      const res = await fetch(path, Object.assign({}, opts, { headers }));
+      let data = null;
+      try { data = await res.json(); } catch {}
+      if (!res.ok) {
+        throw new Error((data && (data.error || data.details)) || ('HTTP ' + res.status));
+      }
+      return data;
+    }
+
+    async function copyToClipboard(text) {
+      // navigator.clipboard is often unavailable on non-HTTPS pages
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        return navigator.clipboard.writeText(text);
+      }
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', 'true');
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      ta.style.top = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+      } finally {
+        document.body.removeChild(ta);
+      }
+    }
+
+    function fmtBytes(b) {
+      if (!b || b === 0) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const i = Math.min(Math.floor(Math.log(b) / Math.log(1024)), units.length - 1);
+      const v = b / Math.pow(1024, i);
+      return v.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+    }
+
+    function rowHtml(u, withStats) {
+      const badge = u.enabled ? '<span class="px-2 py-0.5 rounded-lg bg-emerald-400/20 text-emerald-200 border border-emerald-400/20 text-xs">ON</span>'
+                              : '<span class="px-2 py-0.5 rounded-lg bg-white/10 text-white/70 border border-white/10 text-xs">OFF</span>';
+      const lastIp = withStats ? (u.lastIp || '-') : '-';
+      const conn = withStats ? (u.connCount ?? 0) : '-';
+      const down = withStats ? (u.trafficDown || 0) : 0;
+      const up = withStats ? (u.trafficUp || 0) : 0;
+      const total = down + up;
+      return `
+        <tr class="border-t border-white/10">
+          <td class="py-3 pr-3 font-bold">${escapeHtml(u.name || '')}</td>
+          <td class="py-3 pr-3">${badge}</td>
+          <td class="py-3 pr-3 mono text-xs text-white/70">${escapeHtml(lastIp)}</td>
+          <td class="py-3 pr-3 mono text-xs text-white/70">${escapeHtml(String(conn))}</td>
+          <td class="py-3 pr-3 mono text-xs text-right ${down > 0 ? 'text-emerald-200' : 'text-white/40'}">${withStats ? fmtBytes(down) : '-'}</td>
+          <td class="py-3 pr-3 mono text-xs text-right ${up > 0 ? 'text-sky-200' : 'text-white/40'}">${withStats ? fmtBytes(up) : '-'}</td>
+          <td class="py-3 pr-3 mono text-xs text-right font-bold ${total > 0 ? 'text-white' : 'text-white/40'}">${withStats ? fmtBytes(total) : '-'}</td>
+          <td class="py-3 text-right">
+            <div class="flex justify-end gap-2">
+              <button data-action="copy" data-id="${u.id}" class="px-3 py-1.5 rounded-xl bg-white text-black text-xs font-bold">Ключ</button>
+              <button data-action="toggle" data-id="${u.id}" class="px-3 py-1.5 rounded-xl border border-white/15 hover:border-white/25 text-xs">Вкл/Выкл</button>
+              <button data-action="del" data-id="${u.id}" class="px-3 py-1.5 rounded-xl border border-red-500/30 hover:border-red-500/50 text-red-200 text-xs">Удалить</button>
+            </div>
+          </td>
+        </tr>
+      `;
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    async function loadUsers() {
+      clearError();
+      const data = await api('/api/vpn/users');
+      els.rows.innerHTML = data.users.map(u => rowHtml(u, false)).join('');
+      attachRowHandlers(data.users);
+    }
+
+    async function loadStats() {
+      clearError();
+      const data = await api('/api/vpn/stats');
+      els.rows.innerHTML = data.users.map(u => rowHtml(u, true)).join('');
+      attachRowHandlers(data.users);
+    }
+
+    function attachRowHandlers(users) {
+      els.rows.querySelectorAll('button[data-action]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = btn.getAttribute('data-id');
+          const action = btn.getAttribute('data-action');
+          const u = users.find(x => x.id === id);
+          try {
+            if (action === 'copy') {
+              const link = u.vless || '';
+              if (!link) throw new Error('Нет vless ссылки (обнови список)');
+              const existing = document.getElementById('keyRow-' + id);
+              if (existing) { existing.remove(); return; }
+              document.querySelectorAll('[id^="keyRow-"]').forEach(el => el.remove());
+              const tr = btn.closest('tr');
+              const keyRow = document.createElement('tr');
+              keyRow.id = 'keyRow-' + id;
+              keyRow.innerHTML = `<td colspan="6" class="py-3 px-2">
+                <div class="p-3 rounded-xl bg-black/40 border border-emerald-400/20">
+                  <div class="text-xs uppercase tracking-widest text-white/60 font-bold mb-2">Ключ VLESS (Reality) — ${escapeHtml(u.name)}</div>
+                  <div class="mono text-xs break-all text-emerald-200 select-all">${escapeHtml(link)}</div>
+                  <div class="mt-2 flex gap-2">
+                    <button class="keyRowCopy px-3 py-1.5 rounded-xl bg-emerald-400 text-black text-xs font-bold">Скопировано в буфер</button>
+                  </div>
+                </div>
+              </td>`;
+              tr.after(keyRow);
+              keyRow.querySelector('.keyRowCopy').addEventListener('click', async () => {
+                await copyToClipboard(link).catch(()=>{});
+                keyRow.querySelector('.keyRowCopy').textContent = 'Скопировано!';
+                setTimeout(() => { keyRow.querySelector('.keyRowCopy').textContent = 'Скопировать ещё раз'; }, 1500);
+              });
+              await copyToClipboard(link).catch(()=>{});
+            } else if (action === 'toggle') {
+              await api(`/api/vpn/users/${id}/toggle`, { method: 'POST' });
+              await loadUsers();
+            } else if (action === 'del') {
+              if (!confirm('Удалить пользователя и отключить его ключ?')) return;
+              await api(`/api/vpn/users/${id}`, { method: 'DELETE' });
+              await loadUsers();
+            }
+          } catch (e) {
+            showError(e.message || String(e));
+          }
+        });
+      });
+    }
+
+    els.saveToken.addEventListener('click', () => {
+      setToken(els.token.value.trim());
+      els.tokenHint.textContent = 'Сохранено. Нажми «Список» или «Статистика».';
+      setTimeout(()=>els.tokenHint.textContent='Токен хранится локально в браузере. Нужен для доступа к API `/api/vpn/*`.', 2500);
+    });
+    els.refresh.addEventListener('click', loadUsers);
+    els.loadUsers.addEventListener('click', () => loadUsers().catch(e => showError(e.message)));
+    els.loadStats.addEventListener('click', () => loadStats().catch(e => showError(e.message)));
+
+    els.create.addEventListener('click', async () => {
+      clearError();
+      const name = els.newName.value.trim();
+      if (!name) return showError('Введите имя');
+      try {
+        const data = await api('/api/vpn/users', { method: 'POST', body: JSON.stringify({ name }) });
+        const link = data.user.vless;
+        els.createLink.textContent = link;
+        els.openLink.href = link;
+        els.createResult.classList.remove('hidden');
+        await copyToClipboard(link).catch(()=>{});
+        els.newName.value = '';
+        await loadUsers();
+      } catch (e) {
+        showError(e.message || String(e));
+      }
+    });
+
+    // Init
+    els.token.value = getToken();
+
+    // ===== Realtime net chart =====
+    const net = {
+      canvas: document.getElementById('netCanvas'),
+      rxNow: document.getElementById('rxNow'),
+      txNow: document.getElementById('txNow'),
+      points: [], // {rxMbps, txMbps}
+      maxPoints: 90,
+      last: null, // {tMs, rxBytes, txBytes}
+    };
+
+    function fmtMbps(v) {
+      if (!isFinite(v)) return '—';
+      return v.toFixed(v >= 10 ? 0 : 1) + ' Mbps';
+    }
+
+    function drawNet() {
+      const c = net.canvas;
+      const ctx = c.getContext('2d');
+      const w = c.width = c.clientWidth * (window.devicePixelRatio || 1);
+      const h = c.height = 120 * (window.devicePixelRatio || 1);
+      ctx.clearRect(0, 0, w, h);
+
+      const pad = 10 * (window.devicePixelRatio || 1);
+      const innerW = w - pad * 2;
+      const innerH = h - pad * 2;
+
+      // find max for autoscale
+      let maxV = 1;
+      for (const p of net.points) maxV = Math.max(maxV, p.rxMbps, p.txMbps);
+      // grid
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) {
+        const y = pad + innerH * (i / 4);
+        ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(pad + innerW, y); ctx.stroke();
+      }
+
+      const barW = innerW / net.maxPoints;
+      for (let i = 0; i < net.points.length; i++) {
+        const p = net.points[i];
+        const x = pad + i * barW;
+        const rxH = innerH * (p.rxMbps / maxV);
+        const txH = innerH * (p.txMbps / maxV);
+
+        // RX (emerald) left half
+        ctx.fillStyle = 'rgba(52, 211, 153, 0.75)';
+        ctx.fillRect(x, pad + innerH - rxH, barW * 0.48, rxH);
+        // TX (sky) right half
+        ctx.fillStyle = 'rgba(56, 189, 248, 0.75)';
+        ctx.fillRect(x + barW * 0.52, pad + innerH - txH, barW * 0.48, txH);
+      }
+
+      // top labels
+      ctx.fillStyle = 'rgba(255,255,255,0.55)';
+      ctx.font = `${12 * (window.devicePixelRatio || 1)}px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace`;
+      ctx.fillText(`scale: ${maxV.toFixed(maxV >= 10 ? 0 : 1)} Mbps`, pad, pad + 12 * (window.devicePixelRatio || 1));
+    }
+
+    async function pollNet() {
+      try {
+        const data = await api('/api/vpn/net');
+        const eth = (data.ifaces && (data.ifaces.eth0 || data.ifaces.enp0s5 || data.ifaces[Object.keys(data.ifaces)[0]])) || null;
+        if (!eth) return;
+        const now = Date.now();
+        if (net.last) {
+          const dt = Math.max(0.2, (now - net.last.tMs) / 1000);
+          const rxBps = (eth.rxBytes - net.last.rxBytes) / dt;
+          const txBps = (eth.txBytes - net.last.txBytes) / dt;
+          const rxMbps = Math.max(0, rxBps * 8 / 1e6);
+          const txMbps = Math.max(0, txBps * 8 / 1e6);
+          net.rxNow.textContent = fmtMbps(rxMbps);
+          net.txNow.textContent = fmtMbps(txMbps);
+          net.points.push({ rxMbps, txMbps });
+          if (net.points.length > net.maxPoints) net.points.splice(0, net.points.length - net.maxPoints);
+          drawNet();
+        }
+        net.last = { tMs: now, rxBytes: eth.rxBytes, txBytes: eth.txBytes };
+      } catch (e) {
+        // silently ignore to avoid spamming the error box
+      }
+    }
+
+    setInterval(pollNet, 1000);
+    window.addEventListener('resize', () => drawNet());
+    // initial
+    pollNet();
+  </script>
+</body>
+</html>
+

@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Сканер Выпечки Пятерочка</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
+    <style>
+        :root {
+            --p5-red: #e41c1c;
+            --p5-green: #00a950;
+        }
+        body {
+            background-color: #fcfcfc;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .safe-bottom {
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+        
+        /* Реальный круговой прогресс */
+        .progress-container {
+            position: relative;
+            width: 80px;
+            height: 80px;
+        }
+        .progress-svg {
+            transform: rotate(-90deg);
+        }
+        .progress-bg {
+            fill: none;
+            stroke: #f3f3f3;
+            stroke-width: 6;
+        }
+        .progress-bar {
+            fill: none;
+            stroke: var(--p5-green);
+            stroke-width: 6;
+            stroke-linecap: round;
+            stroke-dasharray: 226.08; /* 2 * PI * r (r=36) */
+            stroke-dashoffset: 226.08;
+            transition: stroke-dashoffset 0.3s ease;
+        }
+        .spinner-rotate {
+            animation: spin 2s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        
+        .p5-logo-circle {
+            width: 80px;
+            height: 80px;
+            background: var(--p5-red);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+        .p5-logo-inner {
+            width: 68px;
+            height: 68px;
+            background: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 48px;
+            font-weight: 900;
+            color: var(--p5-red);
+            padding-top: 2px;
+        }
+        .p5-leaf {
+            position: absolute;
+            top: -4px;
+            right: 12px;
+            width: 25px;
+            height: 18px;
+            background: var(--p5-green);
+            border-radius: 50% 0 50% 0;
+            transform: rotate(-10deg);
+        }
+        #camera-input {
+            display: none;
+        }
+
+        /* Стили для таблицы примера */
+        .example-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 12px;
+            font-size: 12px;
+            border: 1px solid #eee;
+        }
+        .example-table th, .example-table td {
+            border: 1px solid #eee;
+            padding: 4px 8px;
+            text-align: left;
+        }
+        .example-table th {
+            background-color: #f9f9f9;
+            color: #999;
+            font-weight: bold;
+            text-transform: uppercase;
+            font-size: 10px;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+    <!-- ГЛАВНЫЙ ЭКРАН -->
+    <div id="main-screen" class="flex-1 flex flex-col items-center p-6 text-center safe-bottom justify-center">
+        <div class="mb-6 flex justify-center">
+            <div class="p5-logo-circle">
+                <div class="p5-leaf"></div>
+                <div class="p5-logo-inner">5</div>
+            </div>
+        </div>
+
+        <h1 class="text-2xl font-black text-gray-900 mb-6 leading-tight">
+            Сканер для легкого <br> списания выпечки
+        </h1>
+
+        <div class="w-full bg-white rounded-[2rem] p-6 shadow-xl shadow-gray-100 border border-gray-50 mb-6 text-left">
+            <h2 class="font-black text-xs uppercase tracking-widest text-green-600 mb-3 flex items-center gap-2">
+                <span class="w-2 h-2 bg-green-600 rounded-full"></span> Инструкция
+            </h2>
+            <p class="text-gray-600 text-[15px] leading-snug">
+                Удалите все столбцы таблицы, кроме: <br>
+                <span class="text-red-600 font-bold uppercase">PLU | ПЛАН | ПРОДАЖИ</span>.
+            </p>
+            
+            <!-- Пример таблицы -->
+            <table class="example-table">
+                <thead>
+                    <tr>
+                        <th>plu</th>
+                        <th>план на сегодня</th>
+                        <th>продажи за сегодня</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>78025520</td>
+                        <td>4</td>
+                        <td>0</td>
+                    </tr>
+                    <tr>
+                        <td>78030124</td>
+                        <td>7</td>
+                        <td>3</td>
+                    </tr>
+                </tbody>
+            </table>
+            
+            <p class="text-gray-400 text-[11px] mt-4 italic text-center">
+                Сфотографируйте таблицу целиком.
+            </p>
+        </div>
+
+        <div class="mb-8 flex items-center gap-3 px-5 py-3 bg-amber-50 rounded-2xl border border-amber-100 text-left">
+            <div class="text-amber-500">
+                <svg width="20" height="20" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" /></svg>
+            </div>
+            <p class="text-[11px] font-bold text-amber-700 uppercase tracking-tighter leading-tight">
+                Внимание: для работы нейросети должен быть включен VPN
+            </p>
+        </div>
+
+        <label for="camera-input" class="w-full bg-[#00a950] text-white font-black py-5 rounded-2xl text-xl shadow-lg active:scale-95 transition-all cursor-pointer inline-block text-center">
+            СДЕЛАТЬ ФОТО
+        </label>
+        <input type="file" id="camera-input" accept="image/*" capture="environment">
+
+        <div class="mt-10">
+            <p class="text-gray-400 font-black text-[11px] tracking-[0.2em] uppercase">
+                Идея от <span class="text-gray-900">3A4X/28705</span>
+            </p>
+        </div>
+    </div>
+
+    <!-- ЗАГРУЗКА -->
+    <div id="loading-overlay" class="fixed inset-0 bg-white/95 z-[200] hidden flex-col items-center justify-center">
+        <div class="progress-container spinner-rotate">
+            <svg class="progress-svg" width="80" height="80">
+                <circle class="progress-bg" cx="40" cy="40" r="36"></circle>
+                <circle id="progress-bar" class="progress-bar" cx="40" cy="40" r="36"></circle>
+            </svg>
+        </div>
+        <p id="loading-text" class="mt-6 font-black text-gray-900 uppercase tracking-widest text-sm text-center">Инициализация...</p>
+    </div>
+
+    <!-- РЕЗУЛЬТАТЫ -->
+    <div id="result-screen" class="fixed inset-0 bg-white z-[150] hidden flex-col p-6 safe-bottom">
+        <!-- ВЕРХНЯЯ ПАНЕЛЬ С КНОПКАМИ НАВИГАЦИИ -->
+        <div class="flex justify-between items-center mb-6">
+            <button id="prev-btn" class="p-3 bg-gray-100 rounded-xl font-black text-gray-500 uppercase text-[10px] tracking-widest active:scale-90 transition-transform">
+                Назад
+            </button>
+            
+            <div class="flex flex-col items-center gap-1">
+                <span id="counter" class="font-black text-xs bg-gray-100 text-gray-900 px-4 py-1.5 rounded-full">0 / 0</span>
+                <button id="exit-results" class="text-red-500 font-bold text-[10px] uppercase tracking-tighter">Закрыть</button>
+            </div>
+
+            <button id="next-btn" class="p-3 bg-gray-900 rounded-xl font-black text-white uppercase text-[10px] tracking-widest active:scale-90 transition-transform">
+                Вперед
+            </button>
+        </div>
+
+        <div class="flex-1 flex flex-col items-center justify-center">
+            <div class="text-center mb-6 px-4">
+                <h3 id="item-name" class="text-2xl font-black text-gray-900 mb-1 leading-tight">...</h3>
+                <p id="item-plu-text" class="text-gray-400 font-mono text-sm tracking-widest uppercase"></p>
+            </div>
+
+            <div class="w-full bg-white border border-gray-100 rounded-[2.5rem] p-8 mb-6 shadow-sm flex justify-center overflow-hidden">
+                <svg id="barcode-output"></svg>
+            </div>
+
+            <div class="w-full bg-red-600 rounded-[2rem] p-6 text-white text-center shadow-xl shadow-red-100">
+                <p class="text-[10px] font-bold uppercase tracking-[0.2em] opacity-70 mb-1">Количество к списанию</p>
+                <p id="item-diff" class="text-7xl font-black">0</p>
+            </div>
+        </div>
+        
+        <div class="mt-8 text-center">
+            <p class="text-gray-300 text-[10px] font-bold uppercase tracking-widest">Листайте кнопками вверху</p>
+        </div>
+    </div>
+
+    <script>
+        const cameraInput = document.getElementById('camera-input');
+        const mainScreen = document.getElementById('main-screen');
+        const resultScreen = document.getElementById('result-screen');
+        const loading = document.getElementById('loading-overlay');
+        const progressBar = document.getElementById('progress-bar');
+        const loadingText = document.getElementById('loading-text');
+        
+        const CIRCUMFERENCE = 2 * Math.PI * 36;
+        let scannedItems = [];
+        let currentPos = 0;
+
+        function setProgress(percent, text) {
+            const offset = CIRCUMFERENCE - (percent / 100 * CIRCUMFERENCE);
+            progressBar.style.strokeDashoffset = offset;
+            if (text) loadingText.textContent = text;
+        }
+
+        cameraInput.onchange = (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            setProgress(10, "Чтение файла...");
+            loading.style.display = 'flex';
+            mainScreen.classList.add('hidden');
+
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const base64 = event.target.result.split(',')[1];
+                setProgress(30, "Анализ нейросетью...");
+                analyzeWithAI(base64);
+            };
+            reader.readAsDataURL(file);
+        };
+
+        async function analyzeWithAI(base64) {
+            try {
+                let progress = 30;
+                const interval = setInterval(() => {
+                    if (progress < 85) {
+                        progress += 2;
+                        setProgress(progress, "Обработка данных...");
+                    }
+                }, 200);
+
+                const response = await fetch('/api/x5/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ imageBase64: base64 })
+                });
+
+                clearInterval(interval);
+
+                if (!response.ok) {
+                    const err = await response.json().catch(() => ({}));
+                    throw new Error(err.error || 'API Error');
+                }
+
+                const resData = await response.json();
+                const text = resData.data;
+                scannedItems = JSON.parse(text);
+
+                if (scannedItems && scannedItems.length > 0) {
+                    setProgress(100, "Готово!");
+                    setTimeout(() => {
+                        currentPos = 0;
+                        showResult();
+                    }, 500);
+                } else {
+                    throw new Error("No data");
+                }
+            } catch (e) {
+                loading.style.display = 'none';
+                alert("Ошибка распознавания. " + (e.message || "Включите VPN и убедитесь, что в таблице 3 столбца."));
+                resetToMain();
+            }
+        }
+
+        function showResult() {
+            loading.style.display = 'none';
+            resultScreen.classList.remove('hidden');
+            
+            const item = scannedItems[currentPos];
+            const diff = Math.max(0, (item.plan || 0) - (item.sales || 0));
+
+            document.getElementById('item-name').textContent = item.name;
+            document.getElementById('item-plu-text').textContent = `PLU: ${item.plu}`;
+            document.getElementById('item-diff').textContent = diff;
+            document.getElementById('counter').textContent = `${currentPos + 1} / ${scannedItems.length}`;
+
+            JsBarcode("#barcode-output", item.plu, {
+                format: "CODE128",
+                width: 3,
+                height: 100,
+                displayValue: true,
+                fontSize: 18,
+                background: "transparent"
+            });
+        }
+
+        function resetToMain() {
+            scannedItems = [];
+            currentPos = 0;
+            cameraInput.value = "";
+            resultScreen.classList.add('hidden');
+            loading.style.display = 'none';
+            mainScreen.classList.remove('hidden');
+            setProgress(0, "Инициализация...");
+        }
+
+        document.getElementById('next-btn').onclick = () => {
+            if (currentPos < scannedItems.length - 1) {
+                currentPos++;
+                showResult();
+            } else {
+                resetToMain();
+            }
+        };
+
+        document.getElementById('prev-btn').onclick = () => {
+            if (currentPos > 0) {
+                currentPos--;
+                showResult();
+            }
+        };
+
+        document.getElementById('exit-results').onclick = () => resetToMain();
+    </script>
+</body>
+</html>
