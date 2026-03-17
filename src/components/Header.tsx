@@ -60,13 +60,9 @@ export default function Header() {
   const selectorRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Загрузка всех пар для поиска при монтировании
+  // Загрузка всех пар при монтировании (единый запрос, top10 из кэша)
   useEffect(() => {
     loadAllPairs();
-    loadTop10Pairs();
-    
-    // Проверка подключения к Binance
-    checkBinanceConnection();
   }, []);
 
   // Фильтрация пар по поисковому запросу
@@ -119,11 +115,17 @@ export default function Header() {
 
   const loadAllPairs = async () => {
     setIsLoadingAllPairs(true);
+    setIsLoadingPairs(true);
     try {
-      const [binancePairs, bybitTickers] = await Promise.all([
+      // Binance и Bybit загружаются параллельно; если Binance упал — Bybit всё равно даст пары
+      const [binanceResult, bybitResult] = await Promise.allSettled([
         getAllUSDTPairs(),
         getBybitUSDTPairs(),
       ]);
+
+      const binancePairs = binanceResult.status === 'fulfilled' ? binanceResult.value : [];
+      const bybitTickers = bybitResult.status === 'fulfilled' ? bybitResult.value : [];
+
       const binanceSymbols = new Set(binancePairs.map((p) => p.symbol));
       const binanceWithExchange: BinancePair[] = binancePairs.map((p) => ({
         ...p,
@@ -144,34 +146,22 @@ export default function Header() {
       ];
       merged.sort((a, b) => parseFloat(b.quoteVolume || '0') - parseFloat(a.quoteVolume || '0'));
       setAllPairs(merged);
-      setBinanceConnected(true);
+
+      const binanceOk = binancePairs.length > 0;
+      setBinanceConnected(binanceOk);
+
+      // Top-10 из уже загруженных данных (без лишнего запроса)
+      try {
+        const top10 = await getTop10Pairs();
+        setTop10Pairs(top10);
+      } catch {
+        if (merged.length > 0) setTop10Pairs(merged.slice(0, 10));
+      }
     } catch (error) {
       setBinanceConnected(false);
     } finally {
       setIsLoadingAllPairs(false);
-    }
-  };
-
-  const loadTop10Pairs = async () => {
-    setIsLoadingPairs(true);
-    try {
-      const pairs = await getTop10Pairs();
-      setTop10Pairs(pairs);
-      setBinanceConnected(true);
-    } catch (error) {
-      setBinanceConnected(false);
-    } finally {
       setIsLoadingPairs(false);
-    }
-  };
-
-  const checkBinanceConnection = async () => {
-    try {
-      // Простая проверка доступности API
-      const response = await fetch('https://api.binance.com/api/v3/ping');
-      setBinanceConnected(response.ok);
-    } catch (error) {
-      setBinanceConnected(false);
     }
   };
 

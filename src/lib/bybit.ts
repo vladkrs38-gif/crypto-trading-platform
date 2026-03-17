@@ -1,6 +1,7 @@
 import axios from 'axios';
 
 const BYBIT_API_BASE = 'https://api.bybit.com';
+const BYBIT_TIMEOUT = 15000;
 
 export interface BybitTicker {
   symbol: string;
@@ -18,9 +19,11 @@ export async function getBybitUSDTPairs(): Promise<BybitTicker[]> {
     const [spotResponse, linearResponse] = await Promise.all([
       axios.get(`${BYBIT_API_BASE}/v5/market/tickers`, {
         params: { category: 'spot' },
+        timeout: BYBIT_TIMEOUT,
       }),
       axios.get(`${BYBIT_API_BASE}/v5/market/tickers`, {
         params: { category: 'linear' },
+        timeout: BYBIT_TIMEOUT,
       }),
     ]);
     
@@ -101,6 +104,7 @@ export async function getBybitKlines(symbol: string, interval: string = '60', li
         interval,
         limit,
       },
+      timeout: BYBIT_TIMEOUT,
     });
     
     if (response.data?.retCode !== 0) {
@@ -163,6 +167,7 @@ export async function getBybitKlinesFull(
           interval: bybitInterval,
           limit,
         },
+        timeout: BYBIT_TIMEOUT,
       });
       
       if (response.data?.retCode === 0) {
@@ -236,8 +241,9 @@ export async function getBybitKlinesBeforeTime(
           symbol: symbol.toUpperCase(),
           interval: bybitInterval,
           limit,
-          end: endTime * 1000, // Bybit использует миллисекунды
+          end: endTime * 1000,
         },
+        timeout: BYBIT_TIMEOUT,
       });
       
       if (response.data?.retCode === 0) {

@@ -1,90 +1,101 @@
 import axios from 'axios';
 import type { BinancePair, BinanceKline, BinanceTick, CandleData, TickData, Timeframe } from '@/types/binance';
 
-const BINANCE_API_BASE = 'https://api.binance.com/api/v3';
+const BINANCE_DIRECT = 'https://api.binance.com/api/v3';
 const BINANCE_WS_BASE = 'wss://stream.binance.com:9443/ws';
 
-// ОПТИМИЗАЦИЯ: Кэш для списка пар (обновляется раз в 5 минут)
-let allPairsCache: { data: BinancePair[]; timestamp: number } | null = null;
-const PAIRS_CACHE_DURATION = 5 * 60 * 1000; // 5 минут
+let _binanceApiBase: string | null = null;
+function getBinanceApiBase(): string {
+  if (_binanceApiBase !== null) return _binanceApiBase;
+  if (typeof window === 'undefined') return BINANCE_DIRECT;
+  const densityApi = process.env.NEXT_PUBLIC_DENSITY_API;
+  if (densityApi) {
+    _binanceApiBase = `${densityApi}/api/binance-proxy`;
+  } else {
+    _binanceApiBase = '/api/binance-proxy';
+  }
+  return _binanceApiBase;
+}
 
-// Получение всех USDT-пар (для поиска). Исключаем снятые с торгов пары.
+const API_TIMEOUT = 15000;
+
+async function fetchWithRetry<T>(
+  fn: () => Promise<T>,
+  retries = 2,
+  delayMs = 1500,
+): Promise<T> {
+  let lastError: unknown;
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastError = err;
+      const status = err?.response?.status;
+      if (status === 418 || status === 403 || status === 451) throw err;
+      if (i < retries) await new Promise(r => setTimeout(r, delayMs * (i + 1)));
+    }
+  }
+  throw lastError;
+}
+
+let allPairsCache: { data: BinancePair[]; timestamp: number } | null = null;
+const PAIRS_CACHE_DURATION = 5 * 60 * 1000;
+
 export async function getAllUSDTPairs(): Promise<BinancePair[]> {
-  // Проверяем кэш
   const now = Date.now();
   if (allPairsCache && (now - allPairsCache.timestamp) < PAIRS_CACHE_DURATION) {
     return allPairsCache.data;
   }
-  
-  try {
+
+  return fetchWithRetry(async () => {
     let tradingSymbols: Set<string> = new Set();
     try {
-      const exchangeRes = await axios.get<{ symbols?: Array<{ symbol: string; status?: string }> }>(`${BINANCE_API_BASE}/exchangeInfo`);
+      const exchangeRes = await axios.get<{ symbols?: Array<{ symbol: string; status?: string }> }>(
+        `${getBinanceApiBase()}/exchangeInfo`,
+        { timeout: API_TIMEOUT },
+      );
       const symbols = exchangeRes.data?.symbols ?? [];
       tradingSymbols = new Set(symbols.filter(s => s.status === 'TRADING').map(s => s.symbol));
     } catch {
-      // Если exchangeInfo недоступен — не фильтруем по статусу
+      // exchangeInfo unavailable — skip status filter
     }
 
-    const response = await axios.get(`${BINANCE_API_BASE}/ticker/24hr`);
+    const response = await axios.get(`${getBinanceApiBase()}/ticker/24hr`, { timeout: API_TIMEOUT });
     const allPairs = response.data as BinancePair[];
     const filteredPairs = allPairs
       .filter(pair => pair.symbol.endsWith('USDT') && (tradingSymbols.size === 0 || tradingSymbols.has(pair.symbol)))
       .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume));
-    
-    // Сохраняем в кэш
+
     allPairsCache = { data: filteredPairs, timestamp: now };
-    
     return filteredPairs;
-  } catch (error) {
-    throw error;
-  }
+  });
 }
 
-// Получение топ-10 пар по объему + обязательные монеты
 export async function getTop10Pairs(): Promise<BinancePair[]> {
-  try {
-    const response = await axios.get(`${BINANCE_API_BASE}/ticker/24hr`);
-    const allPairs = response.data as BinancePair[];
-    
-    // Обязательные монеты, которые всегда должны быть в списке
-    const requiredSymbols = ['BTCUSDT', 'GMTUSDT'];
-    
-    // Фильтруем только USDT пары и сортируем по объему
-    const usdtPairs = allPairs
-      .filter(pair => pair.symbol.endsWith('USDT'))
-      .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume));
-    
-    // Получаем топ пары (с запасом для обязательных)
-    const topPairs = usdtPairs.slice(0, 10);
-    
-    // Добавляем обязательные монеты, если их нет в топе
-    for (const symbol of requiredSymbols) {
-      if (!topPairs.find(p => p.symbol === symbol)) {
-        const pair = usdtPairs.find(p => p.symbol === symbol);
-        if (pair) {
-          // Заменяем последнюю пару (не обязательную)
-          const lastNonRequired = [...topPairs].reverse().findIndex(p => !requiredSymbols.includes(p.symbol));
-          if (lastNonRequired !== -1) {
-            topPairs[topPairs.length - 1 - lastNonRequired] = pair;
-          }
+  const allPairs = await getAllUSDTPairs();
+  const requiredSymbols = ['BTCUSDT', 'GMTUSDT'];
+
+  const topPairs = allPairs.slice(0, 10);
+
+  for (const symbol of requiredSymbols) {
+    if (!topPairs.find(p => p.symbol === symbol)) {
+      const pair = allPairs.find(p => p.symbol === symbol);
+      if (pair) {
+        const lastNonRequired = [...topPairs].reverse().findIndex(p => !requiredSymbols.includes(p.symbol));
+        if (lastNonRequired !== -1) {
+          topPairs[topPairs.length - 1 - lastNonRequired] = pair;
         }
       }
     }
-    
-    // Сортируем: BTCUSDT первым, затем GMT, остальные по объёму
-    const sorted = topPairs.sort((a, b) => {
-      if (a.symbol === 'BTCUSDT') return -1;
-      if (b.symbol === 'BTCUSDT') return 1;
-      if (a.symbol === 'GMTUSDT') return -1;
-      if (b.symbol === 'GMTUSDT') return 1;
-      return parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume);
-    });
-    
-    return sorted;
-  } catch (error) {
-    throw error;
   }
+
+  return topPairs.sort((a, b) => {
+    if (a.symbol === 'BTCUSDT') return -1;
+    if (b.symbol === 'BTCUSDT') return 1;
+    if (a.symbol === 'GMTUSDT') return -1;
+    if (b.symbol === 'GMTUSDT') return 1;
+    return parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume);
+  });
 }
 
 // Получение исторических свечей
@@ -94,12 +105,13 @@ export async function getKlines(
   limit: number = 500
 ): Promise<CandleData[]> {
   try {
-    const response = await axios.get(`${BINANCE_API_BASE}/klines`, {
+    const response = await axios.get(`${getBinanceApiBase()}/klines`, {
       params: {
         symbol: symbol.toUpperCase(),
         interval,
         limit,
       },
+      timeout: API_TIMEOUT,
     });
 
     // Binance возвращает массив массивов, а не объектов
@@ -170,34 +182,35 @@ export async function getKlinesInitial(
   interval: string,
   limit: number = 1000
 ): Promise<CandleData[]> {
-  try {
-    const response = await axios.get(`${BINANCE_API_BASE}/klines`, {
+  return fetchWithRetry(async () => {
+    const response = await axios.get(`${getBinanceApiBase()}/klines`, {
       params: {
         symbol: symbol.toUpperCase(),
         interval,
-        limit: Math.min(limit, 1000), // Binance max 1000
+        limit: Math.min(limit, 1000),
       },
+      timeout: API_TIMEOUT,
     });
-    
+
     const klines = response.data as any[];
     if (!klines || klines.length === 0) {
       return [];
     }
-    
+
     let cumulativeDelta = 0;
-    
+
     return klines.map((kline: any) => {
       if (Array.isArray(kline)) {
         const volume = parseFloat(kline[5]);
         const quoteVolume = parseFloat(kline[7] || 0);
         const takerBuyQuoteVolume = parseFloat(kline[10] || 0);
-        
+
         const barDelta = quoteVolume > 0 && takerBuyQuoteVolume > 0
           ? 2 * takerBuyQuoteVolume - quoteVolume
           : 0;
-        
+
         cumulativeDelta += barDelta;
-        
+
         return {
           time: Math.floor(kline[0] / 1000),
           open: parseFloat(kline[1]),
@@ -211,9 +224,7 @@ export async function getKlinesInitial(
       }
       throw new Error('Unknown kline format');
     });
-  } catch (error) {
-    throw error;
-  }
+  });
 }
 
 // Получение исторических свечей за период (несколько запросов)
@@ -237,7 +248,7 @@ export async function getKlinesWithPeriod(
     let currentStartTime = startTime;
     
     while (currentStartTime < endTime) {
-      const response = await axios.get(`${BINANCE_API_BASE}/klines`, {
+      const response = await axios.get(`${getBinanceApiBase()}/klines`, {
         params: {
           symbol: symbol.toUpperCase(),
           interval,
@@ -245,6 +256,7 @@ export async function getKlinesWithPeriod(
           startTime: currentStartTime,
           endTime: endTime,
         },
+        timeout: API_TIMEOUT,
       });
       
       const klines = response.data as any[];
@@ -328,13 +340,14 @@ export async function getKlinesBeforeTime(
   limit: number = 500
 ): Promise<CandleData[]> {
   try {
-    const response = await axios.get(`${BINANCE_API_BASE}/klines`, {
+    const response = await axios.get(`${getBinanceApiBase()}/klines`, {
       params: {
         symbol: symbol.toUpperCase(),
         interval,
         limit,
-        endTime: endTime - 1, // Запрашиваем свечи ДО этого времени (не включая)
+        endTime: endTime - 1,
       },
+      timeout: API_TIMEOUT,
     });
 
     const klines = response.data as any[];
@@ -697,11 +710,12 @@ export async function getOrderBookSnapshot(
   limit: number = 1000
 ): Promise<{ bids: OrderBookLevel[]; asks: OrderBookLevel[] }> {
   try {
-    const response = await axios.get(`${BINANCE_API_BASE}/depth`, {
+    const response = await axios.get(`${getBinanceApiBase()}/depth`, {
       params: {
         symbol: symbol.toUpperCase(),
-        limit: Math.min(limit, 5000), // Binance максимум 5000
+        limit: Math.min(limit, 5000),
       },
+      timeout: API_TIMEOUT,
     });
 
     const bids: OrderBookLevel[] = (response.data.bids || [])

@@ -2,7 +2,7 @@
 
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { getEquityCurve } from '@/lib/labApi';
 import EquityReport from '@/components/EquityReport';
 
@@ -24,7 +24,7 @@ const defaultParams = {
   takeAlpha: null as number | null,
   takeProfitPct: 0.003,
   breakEvenAfterLegs: 0,
-  maxLossPct: 3,  // 3% от equity
+  maxLossPct: 3,
   commissionPct: 0.04,
   slippagePct: 0.01,
   initialEquity: 100,
@@ -47,6 +47,14 @@ const defaultParams = {
 };
 
 export default function EquityPage() {
+  return (
+    <Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-main)', color: 'var(--text-muted)' }}>Загрузка...</div>}>
+      <EquityPageContent />
+    </Suspense>
+  );
+}
+
+function EquityPageContent() {
   const searchParams = useSearchParams();
   const symbol = searchParams.get('symbol') ?? '';
   const timeframe = searchParams.get('timeframe') ?? '5';

@@ -267,6 +267,39 @@ app.add_middleware(
 )
 
 
+# ===== Binance REST API proxy (через WARP, обход 418/geo-ban) =====
+
+WARP_PROXY = "http://127.0.0.1:40000"
+BINANCE_API = "https://api.binance.com/api/v3"
+_BINANCE_ALLOWED = {"ticker/24hr", "exchangeInfo", "klines", "depth", "ping", "ticker/price"}
+
+
+@app.get("/api/binance-proxy/{path:path}")
+async def binance_proxy(path: str, request: Request):
+    """
+    Proxy Binance REST API requests through server-side WARP VPN.
+    Avoids 418 bans and CORS issues for browser clients.
+    """
+    if path not in _BINANCE_ALLOWED:
+        return JSONResponse(status_code=400, content={"error": f"Path not allowed: {path}"})
+
+    import aiohttp
+    url = f"{BINANCE_API}/{path}"
+    params = dict(request.query_params)
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params, proxy=WARP_PROXY, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                data = await resp.read()
+                return JSONResponse(
+                    content=json.loads(data),
+                    status_code=resp.status,
+                    headers={"Cache-Control": "no-store"},
+                )
+    except Exception as e:
+        return JSONResponse(status_code=502, content={"error": f"Binance proxy error: {e}"})
+
+
 @app.get("/")
 async def root():
     """Проверка работоспособности"""
