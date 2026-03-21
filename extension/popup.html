@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="header">
+    <div class="logo">HH AutoPilot</div>
+    <div class="subtitle">Расширение для автооткликов</div>
+  </div>
+  <div class="content">
+    <div id="statusCard" class="status-card">
+      <div class="status-dot" id="statusDot"></div>
+      <div>
+        <div class="status-text" id="statusText">Проверяем...</div>
+        <div class="status-hint" id="statusHint"></div>
+      </div>
+    </div>
+
+    <div id="codeBlock" class="code-block" style="display:none">
+      <div class="code-label">Ваш код связки</div>
+      <div class="code-value" id="codeValue"></div>
+      <div class="code-hint">Этот же код отображается на сайте</div>
+    </div>
+
+    <a href="http://proplatforma.ru/hh/" target="_blank" class="open-btn">
+      Открыть панель управления
+    </a>
+
+    <div class="reminder">
+      <div class="reminder-icon">!</div>
+      <div class="reminder-text">
+        Убедитесь, что вы вошли в
+        <a href="https://hh.ru" target="_blank">hh.ru</a>
+        в этом браузере
+      </div>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

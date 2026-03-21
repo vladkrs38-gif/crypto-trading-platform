@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "HH AutoPilot — Автоотклик на вакансии",
+  "version": "2.0.0",
+  "description": "Автоматические отклики на hh.ru с AI-сопроводительными письмами. Работает через proplatforma.ru/hh",
+  "permissions": ["tabs", "storage", "activeTab", "scripting"],
+  "host_permissions": [
+    "https://hh.ru/*",
+    "https://*.hh.ru/*",
+    "https://proplatforma.ru/*",
+    "http://proplatforma.ru/*"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://hh.ru/vacancy/*", "https://*.hh.ru/vacancy/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["http://proplatforma.ru/hh*", "https://proplatforma.ru/hh*"],
+      "js": ["bridge.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

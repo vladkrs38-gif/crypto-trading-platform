@@ -1,0 +1,10 @@
+node_modules/
+venv/
+__pycache__/
+.env
+*.pyc
+dist/
+.DS_Store
+*.zip
+.cursor/
+.browser_data/
