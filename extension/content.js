@@ -59,67 +59,61 @@ function fillNatively(el, value) {
 async function selectResume(resumeIndex) {
   if (resumeIndex == null) return
 
-  const popup = document.querySelector('[data-qa="vacancy-response-popup"]')
-    || document.querySelector('[role="dialog"]')
-    || document.querySelector('[class*="modal"]')
+  // Ожидаем отрисовку попапа (до 4 секунд), чтобы не промахиваться
+  const popup = await waitFor(() => {
+    return document.querySelector('[data-qa="vacancy-response-popup"]')
+      || document.querySelector('[role="dialog"]')
+      || document.querySelector('[class*="modal"]')
+  }, 4000)
 
   const scope = popup || document.body
 
-  const allRadios = [...scope.querySelectorAll('input[type="radio"]')]
-  if (allRadios.length > 1 && resumeIndex < allRadios.length) {
-    const r = allRadios[resumeIndex]
-    r.click()
-    r.dispatchEvent(new Event('change', { bubbles: true }))
-    r.dispatchEvent(new Event('input', { bubbles: true }))
-    const lbl = r.closest('label') || r.parentElement
-    if (lbl) lbl.click()
-    await sleep(800)
-    return
+  // Эмуляция полного цикла клика для React
+  const performReactClick = (el) => {
+    if (!el) return
+    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }))
+    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }))
+    el.click()
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+    el.dispatchEvent(new Event('input', { bubbles: true }))
   }
 
+  // Обновленные стратегии по современному HH.ru
   const strategies = [
+    () => scope.querySelectorAll('[data-qa="resume-select-item"]'),
     () => scope.querySelectorAll('[data-qa*="resume-select"]'),
     () => scope.querySelectorAll('[data-qa*="resume"][data-qa*="item"]'),
+    () => {
+      const radios = scope.querySelectorAll('input[type="radio"]')
+      return Array.from(radios).map(r => r.closest('label') || r.parentElement || r)
+    },
     () => {
       const all = scope.querySelectorAll('[data-qa]')
       return [...all].filter(el => {
         const qa = el.getAttribute('data-qa') || ''
         return qa.includes('resume') && !qa.includes('submit') && !qa.includes('letter')
       })
-    },
-    () => {
-      const containers = scope.querySelectorAll('div[class], label[class]')
-      const groups = new Map()
-      containers.forEach(el => {
-        const cls = el.className
-        if (typeof cls !== 'string') return
-        const key = cls.split(' ').sort().join(' ')
-        if (!groups.has(key)) groups.set(key, [])
-        groups.get(key).push(el)
-      })
-      for (const [, els] of groups) {
-        if (els.length >= 2 && els.length <= 10) {
-          const hasText = els.every(e => e.textContent.trim().length > 5)
-          if (hasText) return els
-        }
-      }
-      return []
-    },
+    }
   ]
 
   for (const strategy of strategies) {
     try {
-      const items = strategy()
-      const arr = items instanceof Array ? items : [...items]
-      if (arr.length > 1 && resumeIndex < arr.length) {
+      const itemsList = strategy()
+      if (!itemsList) continue
+      
+      const arr = Array.from(itemsList)
+      
+      // Если элементы резюме найдены и нужный нам индекс существует
+      if (arr.length > 0 && resumeIndex < arr.length) {
         const target = arr[resumeIndex]
-        const radio = target.querySelector('input[type="radio"]')
-        if (radio) {
-          radio.click()
-          radio.dispatchEvent(new Event('change', { bubbles: true }))
+
+        const hiddenRadio = target.querySelector('input[type="radio"]')
+        if (hiddenRadio) {
+          hiddenRadio.click()
+          hiddenRadio.dispatchEvent(new Event('change', { bubbles: true }))
         }
-        target.click()
-        target.dispatchEvent(new Event('click', { bubbles: true }))
+
+        performReactClick(target)
         await sleep(800)
         return
       }
