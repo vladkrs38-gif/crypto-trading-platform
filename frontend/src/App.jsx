@@ -22,6 +22,8 @@ export default function App() {
   const [user, setUser] = useState(null)
   const [authChecked, setAuthChecked] = useState(false)
   const [showPayment, setShowPayment] = useState(false)
+  const [blockingPayment, setBlockingPayment] = useState(false)
+  const [blockReason, setBlockReason] = useState(null)
 
   const [page, setPage] = useState('dashboard')
   const [mountedPages, setMountedPages] = useState(new Set())
@@ -47,6 +49,13 @@ export default function App() {
       })
       .then(u => {
         setUser(u)
+        if (u.can_apply === false) {
+          setBlockingPayment(true)
+          setBlockReason(u.block_reason)
+        } else {
+          setBlockingPayment(false)
+          setBlockReason(null)
+        }
         if (u.resume_text) {
           resumeLoadedFromServer.current = true
           setResume(u.resume_text)
@@ -74,6 +83,10 @@ export default function App() {
     setUser(newUser)
     localStorage.setItem('hh-token', newToken)
     setAuthView('landing')
+    if (newUser?.can_apply === false) {
+      setBlockingPayment(true)
+      setBlockReason(newUser.block_reason)
+    }
   }
 
   const handleLogout = () => {
@@ -88,12 +101,28 @@ export default function App() {
     if (!token) return
     try {
       const r = await fetch(`${API}/auth/me`, { headers: { 'Authorization': `Bearer ${token}` } })
-      if (r.ok) setUser(await r.json())
+      if (r.ok) {
+        const u = await r.json()
+        setUser(u)
+        if (u.can_apply === false) {
+          setBlockingPayment(true)
+          setBlockReason(u.block_reason)
+        } else {
+          setBlockingPayment(false)
+          setBlockReason(null)
+        }
+        return u
+      }
     } catch {}
+    return null
   }, [token])
 
   const updateCredits = useCallback((newCredits) => {
     setUser(prev => prev ? { ...prev, credits: newCredits } : prev)
+    if (newCredits <= 0) {
+      setBlockingPayment(true)
+      setBlockReason('no_credits')
+    }
   }, [])
 
   const refreshStats = useCallback(async () => {
@@ -212,7 +241,8 @@ export default function App() {
             <div className={page === 'autopilot' ? '' : 'hidden'}>
               <AutoPilotPage resume={resume} setResume={setResume}
                 onRefreshStats={refreshStats}
-                extensionConnected={extensionConnected} token={token} />
+                extensionConnected={extensionConnected} token={token}
+                user={user} onShowPayment={() => setShowPayment(true)} />
             </div>
           )}
           {user?.is_admin && (page === 'admin' || mountedPages.has('admin')) && (
@@ -222,7 +252,20 @@ export default function App() {
           )}
         </Suspense>
       </main>
-      {showPayment && <PaymentModal onClose={() => setShowPayment(false)} />}
+      {(showPayment || blockingPayment) && (
+        <PaymentModal
+          onClose={() => {
+            setShowPayment(false)
+            setBlockingPayment(false)
+          }}
+          blocking={blockingPayment}
+          blockReason={blockReason}
+          onCheckCredits={async () => {
+            const u = await refreshUser()
+            return u?.can_apply === true
+          }}
+        />
+      )}
     </div>
   )
 }

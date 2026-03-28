@@ -131,13 +131,22 @@ def _fetch_vacancy_sync(vacancy_id: str) -> dict:
         return {"id": vacancy_id, "name": vacancy_id}
 
 
-async def run_cycle():
-    """Execute one full search-and-apply cycle."""
+async def run_cycle(user_id: int = 0):
+    """Execute one full search-and-apply cycle for a specific user."""
     global _is_running, _last_run, _last_run_result
     _is_running = True
     _last_run = datetime.now().isoformat()
 
-    config = db.get_auto_config()
+    can_apply, reason = db.check_user_can_apply(user_id)
+    if not can_apply:
+        logger.warning(f"User {user_id} cannot apply: {reason}. Deactivating autopilot.")
+        db.deactivate_auto_config(user_id)
+        _last_run_result = {"new_found": 0, "applied": 0, "errors": 0, "skipped": 0,
+                            "queries_run": 0, "message": f"Stopped: {reason}"}
+        _is_running = False
+        return _last_run_result
+
+    config = db.get_auto_config(user_id)
     queries = config.get("search_queries", [])
     resume_text = config.get("resume_text", "")
     area = config.get("area", 113)
@@ -179,16 +188,24 @@ async def run_cycle():
                 salary_currency=salary.get("currency", "RUR"),
                 url=f"https://hh.ru/vacancy/{hh_id}",
                 search_query=query.strip(),
+                user_id=user_id,
             )
             if is_new:
                 result["new_found"] += 1
 
         await asyncio.sleep(0.5)
 
-    new_vacancies = db.get_new_vacancies()
+    new_vacancies = db.get_new_vacancies(user_id)
     loop = asyncio.get_event_loop()
 
     for vac in new_vacancies:
+        credits = db.get_user_credits(user_id)
+        if credits <= 0:
+            logger.info(f"User {user_id} ran out of credits during autopilot cycle. Deactivating.")
+            db.deactivate_auto_config(user_id)
+            result["message"] = "no_credits"
+            break
+
         hh_id = vac["hh_id"]
         try:
             vacancy_data = await loop.run_in_executor(None, _fetch_vacancy_sync, hh_id)
@@ -200,15 +217,20 @@ async def run_cycle():
                 None, browser.apply_to_vacancy, hh_id, letter
             )
 
-            db.update_vacancy_status(hh_id, apply_result.status)
-            db.log_application(hh_id, letter, apply_result.status, apply_result.error)
+            db.update_vacancy_status(hh_id, apply_result.status, user_id)
+            db.log_application(hh_id, letter, apply_result.status, apply_result.error, user_id)
 
             if apply_result.status in ("sent", "applied", "already_applied"):
                 if apply_result.status != "already_applied":
+                    if not db.deduct_credit(user_id):
+                        logger.info(f"User {user_id} credit deduction failed. Deactivating autopilot.")
+                        db.deactivate_auto_config(user_id)
+                        result["message"] = "no_credits"
+                        break
                     result["applied"] += 1
                 else:
                     result["skipped"] += 1
-                db.update_vacancy_status(hh_id, "applied")
+                db.update_vacancy_status(hh_id, "applied", user_id)
             elif apply_result.status in ("test_required", "no_button"):
                 result["skipped"] += 1
             else:
@@ -216,8 +238,8 @@ async def run_cycle():
 
         except Exception as e:
             logger.error(f"Error applying to {hh_id}: {e}")
-            db.update_vacancy_status(hh_id, "error")
-            db.log_application(hh_id, "", "error", str(e))
+            db.update_vacancy_status(hh_id, "error", user_id)
+            db.log_application(hh_id, "", "error", str(e), user_id)
             result["errors"] += 1
 
         await asyncio.sleep(2)
@@ -228,20 +250,32 @@ async def run_cycle():
 
 
 async def _scheduler_loop():
-    """Main scheduler loop — runs search cycle at configured intervals."""
+    """Main scheduler loop — iterates all users with active autopilot."""
     while True:
-        config = db.get_auto_config()
-        if not config["is_active"]:
+        active_configs = db.get_all_active_auto_configs()
+        if not active_configs:
             await asyncio.sleep(10)
             continue
 
-        try:
-            await run_cycle()
-        except Exception as e:
-            logger.error(f"Scheduler cycle error: {e}")
+        for config in active_configs:
+            uid = config.get("user_id", 0)
 
-        config = db.get_auto_config()
-        interval = max(config.get("interval_minutes", 60), 1) * 60
+            can_apply, reason = db.check_user_can_apply(uid)
+            if not can_apply:
+                logger.warning(f"Scheduler: user {uid} blocked ({reason}), deactivating autopilot.")
+                db.deactivate_auto_config(uid)
+                continue
+
+            try:
+                await run_cycle(uid)
+            except Exception as e:
+                logger.error(f"Scheduler cycle error for user {uid}: {e}")
+
+        active_configs = db.get_all_active_auto_configs()
+        if active_configs:
+            interval = max(min(c.get("interval_minutes", 60) for c in active_configs), 1) * 60
+        else:
+            interval = 60
         await asyncio.sleep(interval)
 
 

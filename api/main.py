@@ -142,10 +142,12 @@ async def auth_register(req: RegisterRequest):
     db.add_credits(user["id"], 10, "registration_bonus")
     user = db.get_user_by_id(user["id"])
     token = _create_token(user)
+    can_apply, block_reason = db.check_user_can_apply(user["id"])
     return {
         "token": token,
         "user": {"id": user["id"], "email": user["email"], "name": user["name"],
-                 "credits": user["credits"], "is_admin": bool(user["is_admin"])},
+                 "credits": user["credits"], "is_admin": bool(user["is_admin"]),
+                 "can_apply": can_apply, "block_reason": block_reason if not can_apply else None},
     }
 
 
@@ -155,20 +157,26 @@ async def auth_login(req: LoginRequest):
     if not user or not _verify_password(req.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Неверный email или пароль")
     token = _create_token(user)
+    can_apply, block_reason = db.check_user_can_apply(user["id"])
     return {
         "token": token,
         "user": {"id": user["id"], "email": user["email"], "name": user["name"],
-                 "credits": user["credits"], "is_admin": bool(user["is_admin"])},
+                 "credits": user["credits"], "is_admin": bool(user["is_admin"]),
+                 "can_apply": can_apply, "block_reason": block_reason if not can_apply else None},
     }
 
 
 @app.get("/api/auth/me")
 async def auth_me(request: Request):
     user = _require_user(request)
+    can_apply, block_reason = db.check_user_can_apply(user["id"])
     return {
         "id": user["id"], "email": user["email"], "name": user["name"],
         "credits": user["credits"], "is_admin": bool(user["is_admin"]),
         "resume_text": user.get("resume_text") or "",
+        "subscription_expires_at": user.get("subscription_expires_at"),
+        "can_apply": can_apply,
+        "block_reason": block_reason if not can_apply else None,
     }
 
 
@@ -258,6 +266,20 @@ async def admin_delete_user(user_id: int, request: Request):
         raise HTTPException(status_code=404, detail="Пользователь не найден")
     db.delete_user(user_id)
     return {"ok": True}
+
+
+class SetSubscriptionRequest(BaseModel):
+    expires_at: str | None = None
+
+
+@app.post("/api/admin/users/{user_id}/subscription")
+async def admin_set_subscription(user_id: int, req: SetSubscriptionRequest, request: Request):
+    _require_admin(request)
+    target = db.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    db.set_subscription(user_id, req.expires_at)
+    return {"user_id": user_id, "subscription_expires_at": req.expires_at}
 
 
 class ResetPasswordRequest(BaseModel):
@@ -1005,6 +1027,17 @@ async def get_auto_config(request: Request):
 @app.post("/api/auto/config")
 async def save_auto_config(req: AutoConfigRequest, request: Request):
     user = _require_user(request)
+    if req.is_active:
+        can_apply, reason = db.check_user_can_apply(user["id"])
+        if not can_apply:
+            raise HTTPException(
+                status_code=403,
+                detail="Невозможно включить автопилот: " + (
+                    "недостаточно откликов" if reason == "no_credits"
+                    else "подписка истекла" if reason == "subscription_expired"
+                    else "ошибка доступа"
+                ),
+            )
     db.save_auto_config(
         resume_text=req.resume_text, area=req.area,
         remote_only=req.remote_only, search_queries=req.search_queries,
@@ -1016,10 +1049,20 @@ async def save_auto_config(req: AutoConfigRequest, request: Request):
 
 @app.post("/api/auto/run-now")
 async def auto_run_now(request: Request):
-    _require_user(request)
+    user = _require_user(request)
+    can_apply, reason = db.check_user_can_apply(user["id"])
+    if not can_apply:
+        raise HTTPException(
+            status_code=403,
+            detail="Невозможно запустить: " + (
+                "недостаточно откликов" if reason == "no_credits"
+                else "подписка истекла" if reason == "subscription_expired"
+                else "ошибка доступа"
+            ),
+        )
     if scheduler._is_running:
         raise HTTPException(status_code=409, detail="Цикл уже выполняется")
-    result = await scheduler.run_cycle()
+    result = await scheduler.run_cycle(user["id"])
     return result
 
 

@@ -11,7 +11,7 @@ const AREAS = [
   { id: 66, name: 'Нижний Новгород' },
 ]
 
-export default function AutoPilotPage({ resume, setResume, onRefreshStats, extensionConnected, token }) {
+export default function AutoPilotPage({ resume, setResume, onRefreshStats, extensionConnected, token, user, onShowPayment }) {
   const [config, setConfig] = useState(null)
   const [status, setStatus] = useState(null)
   const [saving, setSaving] = useState(false)
@@ -70,25 +70,43 @@ export default function AutoPilotPage({ resume, setResume, onRefreshStats, exten
         headers: { ...authHeaders, 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       })
+      if (r.status === 403) {
+        onShowPayment?.()
+        return false
+      }
       if (r.ok) {
         const d = await r.json()
         setConfig(d)
         setQueries(d.search_queries || [])
+        return true
       }
     } catch {}
     finally { setSaving(false) }
+    return false
   }
 
-  const toggleActive = () => {
+  const toggleActive = async () => {
     const newActive = !config?.is_active
-    save({ is_active: newActive })
+    if (newActive && user?.credits <= 0) {
+      onShowPayment?.()
+      return
+    }
+    await save({ is_active: newActive })
   }
 
   const runNow = async () => {
+    if (user?.credits <= 0) {
+      onShowPayment?.()
+      return
+    }
     setRunningNow(true)
     try {
       await save()
-      await fetch(`${API}/auto/run-now`, { method: 'POST', headers: authHeaders })
+      const r = await fetch(`${API}/auto/run-now`, { method: 'POST', headers: authHeaders })
+      if (r.status === 403) {
+        onShowPayment?.()
+        return
+      }
       await loadStatus()
       onRefreshStats()
     } catch (e) {

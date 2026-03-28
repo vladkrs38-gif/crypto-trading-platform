@@ -125,6 +125,7 @@ def _migrate(conn):
             pass
     text_cols = [
         ("users", "resume_text", "''"),
+        ("users", "subscription_expires_at", "NULL"),
     ]
     for table, col, default in text_cols:
         try:
@@ -521,5 +522,56 @@ def save_auto_config(resume_text: str = None, area: int = None,
             int(is_active) if is_active is not None else int(current["is_active"]),
             user_id,
         ),
+    )
+    conn.commit()
+
+
+def deactivate_auto_config(user_id: int):
+    conn = _get_conn()
+    conn.execute(
+        "UPDATE auto_config SET is_active = 0, updated_at = datetime('now') WHERE user_id = ?",
+        (user_id,),
+    )
+    conn.commit()
+
+
+def get_all_active_auto_configs() -> list[dict]:
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT * FROM auto_config WHERE is_active = 1"
+    ).fetchall()
+    result = []
+    for row in rows:
+        d = dict(row)
+        d["search_queries"] = json.loads(d.get("search_queries") or "[]")
+        d["is_active"] = bool(d.get("is_active"))
+        d["remote_only"] = bool(d.get("remote_only"))
+        result.append(d)
+    return result
+
+
+def check_user_can_apply(user_id: int) -> tuple[bool, str]:
+    """Check if user has credits and active subscription. Returns (can_apply, reason)."""
+    user = get_user_by_id(user_id)
+    if not user:
+        return False, "user_not_found"
+    if user["credits"] <= 0:
+        return False, "no_credits"
+    sub_expires = user.get("subscription_expires_at")
+    if sub_expires:
+        try:
+            expires_dt = datetime.fromisoformat(sub_expires)
+            if expires_dt < datetime.now():
+                return False, "subscription_expired"
+        except (ValueError, TypeError):
+            pass
+    return True, "ok"
+
+
+def set_subscription(user_id: int, expires_at: Optional[str]):
+    conn = _get_conn()
+    conn.execute(
+        "UPDATE users SET subscription_expires_at = ? WHERE id = ?",
+        (expires_at, user_id),
     )
     conn.commit()

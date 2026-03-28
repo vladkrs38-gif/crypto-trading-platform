@@ -492,6 +492,7 @@ export default function SearchPage({ resume, setResume, onRefreshStats, extensio
     setTotal(idsToApply.length)
     setProgressCollapsed(false)
     stopExtRef.current = false
+    let remainingCredits = user?.credits ?? 0
 
     for (let i = 0; i < idsToApply.length; i++) {
       if (stopExtRef.current) { setStopped(true); break }
@@ -535,6 +536,12 @@ export default function SearchPage({ resume, setResume, onRefreshStats, extensio
         continue
       }
 
+      if (remainingCredits <= 0) {
+        onUpdateCredits?.(0)
+        onShowPayment?.()
+        break
+      }
+
       if (stopExtRef.current) { setStopped(true); break }
 
       setProgress(prev => prev.map(p =>
@@ -573,13 +580,21 @@ export default function SearchPage({ resume, setResume, onRefreshStats, extensio
             body: JSON.stringify({ vacancy_id: String(vid), title: result?.title || pageTitle, company: vacancy?.employer?.name || '', status, cover_letter: coverLetter?.slice(0, 200), error, location: vacancy?.area?.name || '' }),
           })
           if (trackResp.status === 403) {
+            remainingCredits = 0
             onUpdateCredits?.(0)
             onShowPayment?.()
             break
           }
           if (trackResp.ok) {
             const trackData = await trackResp.json()
-            if (typeof trackData.credits === 'number') onUpdateCredits?.(trackData.credits)
+            if (typeof trackData.credits === 'number') {
+              remainingCredits = trackData.credits
+              onUpdateCredits?.(trackData.credits)
+              if (trackData.credits <= 0) {
+                onShowPayment?.()
+                break
+              }
+            }
           }
       } catch (e) { console.warn('track-apply error:', e) }
 
@@ -652,6 +667,10 @@ export default function SearchPage({ resume, setResume, onRefreshStats, extensio
               setCurrentIndex(data.index)
               setProgress(prev => [...prev.filter(p => p.vacancy_id !== data.vacancy_id), data])
               setVacancyStatuses(prev => ({ ...prev, [data.vacancy_id]: data.status }))
+            } else if (data.type === 'no_credits') {
+              onUpdateCredits?.(0)
+              onShowPayment?.()
+              setStopped(true)
             } else if (data.type === 'done') {
               setApplyDone(true)
             } else if (data.type === 'stopped') {
