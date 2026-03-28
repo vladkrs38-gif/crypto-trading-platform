@@ -15,6 +15,6 @@ chrome.storage.local.get('userCode', (data) => {
   } else {
     statusCard.className = 'status-card warn'
     statusText.textContent = 'Откройте сайт для связки'
-    statusHint.textContent = 'Перейдите на proplatforma.ru/hh'
+    statusHint.textContent = 'Перейдите на klikbot.ru'
   }
 })

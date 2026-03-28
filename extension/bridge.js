@@ -1,4 +1,4 @@
-/* bridge.js — Content script injected into proplatforma.ru/hh pages.
+/* bridge.js — Content script injected into klikbot.ru pages.
    Bridges communication between the website UI and the extension background. */
 
 (function () {

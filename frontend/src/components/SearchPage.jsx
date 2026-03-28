@@ -85,6 +85,13 @@ export default function SearchPage({ resume, setResume, onRefreshStats, extensio
   const [hhResumes, setHhResumes] = useState([])
   const [hhResumeIndex, setHhResumeIndex] = useState(null)
   const [hhResumesLoading, setHhResumesLoading] = useState(false)
+  const [sendCoverLetter, setSendCoverLetter] = useState(() => {
+    try { return localStorage.getItem('hh-send-cover-letter') !== '0' } catch { return true }
+  })
+  const [dailyLimit, setDailyLimit] = useState({ used_today: 0, limit: 200, remaining: 200, is_blocked: false, reset_at: null })
+  const [showLimitModal, setShowLimitModal] = useState(false)
+  const [countdown, setCountdown] = useState('')
+  const dailyLimitRef = useRef({ used_today: 0, limit: 200, remaining: 200, is_blocked: false })
   const fileInputRef = useRef(null)
   const serverSaveRef = useRef(null)
   const serverLoadedRef = useRef(false)
@@ -138,6 +145,42 @@ export default function SearchPage({ resume, setResume, onRefreshStats, extensio
       })
       .catch(() => {})
   }, [])
+
+  const fetchDailyLimit = async () => {
+    if (!token) return dailyLimit
+    try {
+      const r = await fetch(`${API}/daily-limit`, { headers: authHeaders })
+      if (r.ok) {
+        const data = await r.json()
+        setDailyLimit(data)
+        dailyLimitRef.current = data
+        return data
+      }
+    } catch {}
+    return dailyLimit
+  }
+
+  useEffect(() => {
+    if (token) fetchDailyLimit()
+  }, [token])
+
+  useEffect(() => {
+    if (!showLimitModal) return
+    const update = () => {
+      const now = new Date()
+      const tomorrow = new Date(now)
+      tomorrow.setDate(tomorrow.getDate() + 1)
+      tomorrow.setHours(0, 0, 0, 0)
+      const diff = tomorrow - now
+      const h = Math.floor(diff / 3600000)
+      const m = Math.floor((diff % 3600000) / 60000)
+      const s = Math.floor((diff % 60000) / 1000)
+      setCountdown(`${h}ч ${String(m).padStart(2, '0')}мин ${String(s).padStart(2, '0')}с`)
+    }
+    update()
+    const interval = setInterval(update, 1000)
+    return () => clearInterval(interval)
+  }, [showLimitModal])
 
   const fetchVacancyStatuses = async (ids) => {
     if (!ids?.length) return
@@ -472,6 +515,11 @@ export default function SearchPage({ resume, setResume, onRefreshStats, extensio
       onShowPayment?.()
       return
     }
+    const limitCheck = await fetchDailyLimit()
+    if (limitCheck.is_blocked) {
+      setShowLimitModal(true)
+      return
+    }
     const skipStatuses = ['applied', 'sent', 'cover_letter_filled', 'already_applied', 'test_required', 'no_button']
     let idsToApply = selectedIds.size > 0 ? [...selectedIds] : vacancies.map(v => v.id)
     const skippedByDb = idsToApply.filter(id => skipStatuses.includes(vacancyStatuses[id]))
@@ -492,7 +540,43 @@ export default function SearchPage({ resume, setResume, onRefreshStats, extensio
     setTotal(idsToApply.length)
     setProgressCollapsed(false)
     stopExtRef.current = false
-    let remainingCredits = user?.credits ?? 0
+
+    const syncOneToDb = (body, vid) => {
+      setProgress(prev => prev.map(p =>
+        String(p.vacancy_id) === String(vid) ? { ...p, db_syncing: true } : p
+      ))
+      fetch(`${API}/db/track-apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify(body),
+      })
+        .then(async r => {
+          if (r.ok) {
+            const data = await r.json()
+            if (typeof data.credits === 'number') onUpdateCredits?.(data.credits)
+            if (data.daily_limit) {
+              dailyLimitRef.current = data.daily_limit
+              setDailyLimit(data.daily_limit)
+            }
+            if (data.error === 'daily_limit') {
+              setShowLimitModal(true)
+              stopExtRef.current = true
+            }
+            setProgress(prev => prev.map(p =>
+              String(p.vacancy_id) === String(vid) ? { ...p, db_syncing: false, db_synced: true, db_sync_failed: false } : p
+            ))
+          } else {
+            setProgress(prev => prev.map(p =>
+              String(p.vacancy_id) === String(vid) ? { ...p, db_syncing: false, db_sync_failed: true } : p
+            ))
+          }
+        })
+        .catch(() => {
+          setProgress(prev => prev.map(p =>
+            String(p.vacancy_id) === String(vid) ? { ...p, db_syncing: false, db_sync_failed: true } : p
+          ))
+        })
+    }
 
     for (let i = 0; i < idsToApply.length; i++) {
       if (stopExtRef.current) { setStopped(true); break }
@@ -512,12 +596,11 @@ export default function SearchPage({ resume, setResume, onRefreshStats, extensio
           p.vacancy_id === vid ? { ...p, status: 'already_applied', title: pageTitle } : p
         ))
         setVacancyStatuses(prev => ({ ...prev, [vid]: 'already_applied' }))
-        try {
-          await fetch(`${API}/db/track-apply`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders },
-            body: JSON.stringify({ vacancy_id: String(vid), title: pageTitle, company: vacancy?.employer?.name || '', status: 'already_applied', location: vacancy?.area?.name || '' }),
-          })
-        } catch (e) { console.warn('track-apply error:', e) }
+        syncOneToDb({
+          vacancy_id: String(vid), title: pageTitle,
+          company: vacancy?.employer?.name || '',
+          status: 'already_applied', location: vacancy?.area?.name || '',
+        }, vid)
         continue
       }
 
@@ -527,39 +610,32 @@ export default function SearchPage({ resume, setResume, onRefreshStats, extensio
           p.vacancy_id === vid ? { ...p, status: skipStatus, title: pageTitle } : p
         ))
         setVacancyStatuses(prev => ({ ...prev, [vid]: skipStatus }))
-        try {
-          await fetch(`${API}/db/track-apply`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders },
-            body: JSON.stringify({ vacancy_id: String(vid), title: pageTitle, company: vacancy?.employer?.name || '', status: skipStatus, location: vacancy?.area?.name || '' }),
-          })
-        } catch (e) { console.warn('track-apply error:', e) }
+        syncOneToDb({
+          vacancy_id: String(vid), title: pageTitle,
+          company: vacancy?.employer?.name || '',
+          status: skipStatus, location: vacancy?.area?.name || '',
+        }, vid)
         continue
       }
 
-      if (remainingCredits <= 0) {
-        onUpdateCredits?.(0)
-        onShowPayment?.()
-        break
-      }
-
       if (stopExtRef.current) { setStopped(true); break }
-
-      setProgress(prev => prev.map(p =>
-        p.vacancy_id === vid ? { ...p, step: 'generating_letter', title: pageTitle } : p
-      ))
 
       let coverLetter = ''
-      try {
-        const r = await fetch(`${API}/generate-letter`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...authHeaders },
-          body: JSON.stringify({ vacancy, resume_text: resume }),
-        })
-        const d = await r.json()
-        coverLetter = d.letter || d.cover_letter || ''
-      } catch {}
-
-      if (stopExtRef.current) { setStopped(true); break }
+      if (sendCoverLetter) {
+        setProgress(prev => prev.map(p =>
+          p.vacancy_id === vid ? { ...p, step: 'generating_letter', title: pageTitle } : p
+        ))
+        try {
+          const r = await fetch(`${API}/generate-letter`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...authHeaders },
+            body: JSON.stringify({ vacancy, resume_text: resume }),
+          })
+          const d = await r.json()
+          coverLetter = d.letter || d.cover_letter || ''
+        } catch {}
+        if (stopExtRef.current) { setStopped(true); break }
+      }
 
       setProgress(prev => prev.map(p =>
         p.vacancy_id === vid ? { ...p, step: 'applying' } : p
@@ -574,29 +650,24 @@ export default function SearchPage({ resume, setResume, onRefreshStats, extensio
         p.vacancy_id === vid ? { ...p, status, error, title: result?.title || pageTitle } : p
       ))
       setVacancyStatuses(prev => ({ ...prev, [vid]: status }))
-      try {
-          const trackResp = await fetch(`${API}/db/track-apply`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders },
-            body: JSON.stringify({ vacancy_id: String(vid), title: result?.title || pageTitle, company: vacancy?.employer?.name || '', status, cover_letter: coverLetter?.slice(0, 200), error, location: vacancy?.area?.name || '' }),
-          })
-          if (trackResp.status === 403) {
-            remainingCredits = 0
-            onUpdateCredits?.(0)
-            onShowPayment?.()
-            break
-          }
-          if (trackResp.ok) {
-            const trackData = await trackResp.json()
-            if (typeof trackData.credits === 'number') {
-              remainingCredits = trackData.credits
-              onUpdateCredits?.(trackData.credits)
-              if (trackData.credits <= 0) {
-                onShowPayment?.()
-                break
-              }
-            }
-          }
-      } catch (e) { console.warn('track-apply error:', e) }
+      syncOneToDb({
+        vacancy_id: String(vid), title: result?.title || pageTitle,
+        company: vacancy?.employer?.name || '',
+        status, cover_letter: coverLetter?.slice(0, 200),
+        error, location: vacancy?.area?.name || '',
+      }, vid)
+
+      if (status === 'sent' || status === 'cover_letter_filled') {
+        const newUsed = dailyLimitRef.current.used_today + 1
+        const newRemaining = Math.max(0, dailyLimitRef.current.remaining - 1)
+        dailyLimitRef.current = { ...dailyLimitRef.current, used_today: newUsed, remaining: newRemaining, is_blocked: newRemaining <= 0 }
+        setDailyLimit({ ...dailyLimitRef.current })
+        if (newRemaining <= 0) {
+          setShowLimitModal(true)
+          setStopped(true)
+          break
+        }
+      }
 
       if (!stopExtRef.current && i < idsToApply.length - 1) {
         await new Promise(r => setTimeout(r, 500))
@@ -609,11 +680,17 @@ export default function SearchPage({ resume, setResume, onRefreshStats, extensio
     setSelectedIds(new Set())
     if (!stopExtRef.current) setApplyDone(true)
     onRefreshStats()
+    fetchDailyLimit()
   }
 
   const startMassApply = async () => {
     if (user?.credits <= 0) {
       onShowPayment?.()
+      return
+    }
+    const limitCheck = await fetchDailyLimit()
+    if (limitCheck.is_blocked) {
+      setShowLimitModal(true)
       return
     }
     const skipStatuses = ['applied', 'sent', 'cover_letter_filled', 'already_applied', 'test_required', 'no_button']
@@ -671,6 +748,13 @@ export default function SearchPage({ resume, setResume, onRefreshStats, extensio
               onUpdateCredits?.(0)
               onShowPayment?.()
               setStopped(true)
+            } else if (data.type === 'daily_limit') {
+              if (data.daily_limit) {
+                dailyLimitRef.current = data.daily_limit
+                setDailyLimit(data.daily_limit)
+              }
+              setShowLimitModal(true)
+              setStopped(true)
             } else if (data.type === 'done') {
               setApplyDone(true)
             } else if (data.type === 'stopped') {
@@ -689,6 +773,7 @@ export default function SearchPage({ resume, setResume, onRefreshStats, extensio
         return prev
       })
       onRefreshStats()
+      fetchDailyLimit()
     }
   }
 
@@ -751,24 +836,6 @@ export default function SearchPage({ resume, setResume, onRefreshStats, extensio
   return (
     <div className="p-4 sm:p-6 w-full space-y-5">
       <h2 className="text-xl sm:text-2xl font-bold text-white">Поиск и отклик</h2>
-
-      {/* Status banner */}
-      {extensionConnected ? (
-        <div className="bg-success/10 border border-success/20 rounded-xl px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-2">
-          <span className="w-2.5 h-2.5 bg-success rounded-full animate-pulse" />
-          <span className="text-success text-sm font-medium">Расширение подключено</span>
-          <span className="text-xs text-slate-500 ml-1">Убедитесь, что вы вошли в hh.ru в этом браузере. Найдите вакансии и нажмите «Откликнуться»</span>
-        </div>
-      ) : (
-        <div className="bg-warn/10 border border-warn/20 rounded-xl px-4 sm:px-5 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div>
-            <div className="text-warn font-medium text-sm">Расширение не подключено</div>
-            <div className="text-xs text-slate-400 mt-0.5">
-              Без расширения доступен только поиск вакансий. Скачайте и установите расширение для Chrome или Яндекс Браузера.
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Top row: Search + Resume — 50/50 */}
       <div className="flex flex-col lg:flex-row gap-4">
@@ -845,6 +912,55 @@ export default function SearchPage({ resume, setResume, onRefreshStats, extensio
                     <span className="w-2 h-2 bg-success rounded-full" />
                     <span className="text-xs font-medium text-success">Готово к поиску</span>
                   </div>
+                  {token && (
+                    <div
+                      className={`rounded-lg p-2.5 mb-3 cursor-pointer transition ${
+                        dailyLimit.remaining <= 0
+                          ? 'bg-red-950/40 border border-red-900/30'
+                          : dailyLimit.remaining <= 20
+                            ? 'bg-yellow-950/30 border border-yellow-900/20'
+                            : 'bg-dark-600 border border-dark-300'
+                      }`}
+                      onClick={() => dailyLimit.remaining <= 0 && setShowLimitModal(true)}
+                    >
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-xs text-slate-500 flex items-center gap-1">
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                          </svg>
+                          Лимит HH сегодня
+                        </span>
+                        <span className={`text-xs font-semibold ${
+                          dailyLimit.remaining <= 0 ? 'text-red-400' : dailyLimit.remaining <= 20 ? 'text-yellow-400' : 'text-slate-300'
+                        }`}>
+                          {dailyLimit.used_today} / {dailyLimit.limit}
+                        </span>
+                      </div>
+                      <div className="w-full bg-dark-300 rounded-full h-1">
+                        <div
+                          className={`h-1 rounded-full transition-all ${
+                            dailyLimit.remaining <= 0 ? 'bg-red-500' : dailyLimit.remaining <= 20 ? 'bg-yellow-500' : 'bg-accent'
+                          }`}
+                          style={{ width: `${Math.min(100, (dailyLimit.used_today / dailyLimit.limit) * 100)}%` }}
+                        />
+                      </div>
+                      {dailyLimit.remaining <= 0 && (
+                        <div className="text-xs text-red-400 mt-1.5 animate-pulse">Лимит исчерпан — нажмите для деталей</div>
+                      )}
+                    </div>
+                  )}
+                  <label className="flex items-center justify-between gap-3 mb-2 cursor-pointer select-none">
+                    <span className={`text-xs leading-snug ${sendCoverLetter ? 'text-slate-200' : 'text-slate-500'}`}>
+                      Сопроводительное письмо к отклику
+                    </span>
+                    <span className={`relative inline-flex w-9 h-5 rounded-full transition-colors shrink-0 ${sendCoverLetter ? 'bg-accent' : 'bg-dark-400'}`}>
+                      <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${sendCoverLetter ? 'translate-x-4' : 'translate-x-0'}`} />
+                      <input type="checkbox" checked={sendCoverLetter} onChange={e => {
+                        setSendCoverLetter(e.target.checked)
+                        try { localStorage.setItem('hh-send-cover-letter', e.target.checked ? '1' : '0') } catch {}
+                      }} className="sr-only" />
+                    </span>
+                  </label>
                   <div className="text-sm font-medium text-slate-200 mb-3 line-clamp-2">
                     {parseResumePreview(resume).title || 'Резюме загружено'}
                   </div>
@@ -992,7 +1108,16 @@ export default function SearchPage({ resume, setResume, onRefreshStats, extensio
                     <div className="flex-1 min-w-0">
                       <div className="text-slate-200 truncate">{p.title || p.vacancy_id}</div>
                       {st ? (
-                        <div className={`text-xs mt-0.5 ${st.cls}`}>{st.icon} {st.text}{p.error ? ` — ${p.error}` : ''}</div>
+                        <div className={`text-xs mt-0.5 ${st.cls}`}>
+                          {st.icon} {st.text}{p.error ? ` — ${p.error}` : ''}
+                          {p.db_sync_failed
+                            ? <span className="text-warn"> · не в базе</span>
+                            : p.db_synced
+                              ? <span className="text-green-600"> · в базе</span>
+                              : p.db_syncing
+                                ? <span className="text-slate-500"> · запись...</span>
+                                : null}
+                        </div>
                       ) : (
                         <div className="text-xs text-accent-hover mt-0.5 animate-pulse">
                           {p.step === 'checking' && 'Проверка...'}
@@ -1059,10 +1184,28 @@ export default function SearchPage({ resume, setResume, onRefreshStats, extensio
             )}
           </div>
           <div className="flex items-center gap-2">
+            {token && (
+              <div
+                className={`px-2.5 py-1 rounded-lg text-xs font-medium flex items-center gap-1.5 cursor-pointer transition ${
+                  dailyLimit.remaining <= 0
+                    ? 'bg-red-950/50 text-red-400 border border-red-900/30 animate-pulse'
+                    : dailyLimit.remaining <= 20
+                      ? 'bg-yellow-950/40 text-yellow-400 border border-yellow-900/20'
+                      : 'bg-dark-500 text-slate-400 border border-dark-300'
+                }`}
+                onClick={() => dailyLimit.remaining <= 0 && setShowLimitModal(true)}
+                title="Лимит HH.ru: 200 откликов в сутки"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                <span>{dailyLimit.used_today}/{dailyLimit.limit}</span>
+              </div>
+            )}
             {vacancies.length > 0 && canApply && !applying && !applyDone && !stopped && unappliedCount > 0 && (
-              <button onClick={handleStartApply} disabled={!resume?.trim()}
+              <button onClick={handleStartApply} disabled={!resume?.trim() || dailyLimit.is_blocked}
                 className="px-5 py-2.5 bg-success text-white font-semibold rounded-lg hover:bg-green-600 disabled:opacity-50 transition text-sm">
-                Откликнуться ({unappliedCount})
+                {dailyLimit.is_blocked ? 'Лимит исчерпан' : `Откликнуться (${unappliedCount})`}
               </button>
             )}
             {vacancies.length > 0 && (
@@ -1237,6 +1380,45 @@ export default function SearchPage({ resume, setResume, onRefreshStats, extensio
           </div>
         )}
       </div>
+
+      {/* Daily limit modal */}
+      {showLimitModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowLimitModal(false)}>
+          <div className="bg-dark-700 border border-dark-300 rounded-2xl p-6 max-w-sm mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="text-center">
+              <div className="w-14 h-14 rounded-full bg-red-950/50 border border-red-900/40 flex items-center justify-center mx-auto mb-4">
+                <svg className="w-7 h-7 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <h3 className="text-lg font-bold text-white mb-2">Лимит откликов исчерпан</h3>
+              <p className="text-sm text-slate-400 mb-1">
+                HH.ru разрешает не более <span className="text-white font-semibold">200</span> откликов в сутки.
+              </p>
+              <p className="text-sm text-slate-400 mb-4">
+                Это ограничение HH, а не нашего сервиса.
+              </p>
+              <div className="bg-dark-600 rounded-xl p-4 mb-5">
+                <div className="flex items-center justify-between text-xs text-slate-500 mb-2">
+                  <span>Использовано сегодня</span>
+                  <span className="text-red-400 font-semibold">{dailyLimit.used_today} / {dailyLimit.limit}</span>
+                </div>
+                <div className="w-full bg-dark-300 rounded-full h-2 mb-3">
+                  <div className="h-2 rounded-full bg-red-500 transition-all" style={{ width: '100%' }} />
+                </div>
+                <div className="text-xs text-slate-500 mb-1">Возобновление через</div>
+                <div className="text-2xl font-bold text-accent">{countdown}</div>
+              </div>
+              <button
+                onClick={() => setShowLimitModal(false)}
+                className="w-full px-5 py-2.5 bg-dark-500 text-slate-200 text-sm font-medium rounded-lg hover:bg-dark-400 transition"
+              >
+                Понятно
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -1,7 +1,7 @@
 /* background.js — service worker
    Orchestrates mass apply: opens tabs, requests AI letters from server, delegates to content script. */
 
-const DEFAULT_API = 'http://proplatforma.ru/hh/api'
+const DEFAULT_API = 'https://klikbot.ru/api'
 
 async function getApi() {
   const data = await chrome.storage.local.get('apiUrl')

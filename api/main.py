@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 import os
 import re
 import jwt
@@ -43,6 +43,7 @@ import db
 import scheduler
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 HH_USER_AGENT = os.getenv("HH_USER_AGENT", "JobHelper/1.0 (hh-job-helper)")
@@ -226,6 +227,16 @@ async def delete_search_state(request: Request):
 
 
 ###############################################################################
+# Daily limit (hh.ru: 200/day)
+###############################################################################
+
+@app.get("/api/daily-limit")
+async def get_daily_limit(request: Request):
+    user = _require_user(request)
+    return db.get_daily_limit_info(user["id"])
+
+
+###############################################################################
 # Admin endpoints
 ###############################################################################
 
@@ -405,7 +416,7 @@ async def generate_letter(req: GenerateLetterRequest, request: Request):
         raise HTTPException(status_code=500, detail="DEEPSEEK_API_KEY не задан. Добавьте ключ в .env")
 
     vacancy_str = _format_vacancy_for_prompt(req.vacancy)
-    client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
+    client = AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
 
     system_prompt = """Ты помощник по составлению сопроводительных писем к вакансиям на hh.ru.
 Напиши краткое (2-4 абзаца) профессиональное сопроводительное письмо на русском языке.
@@ -420,7 +431,7 @@ async def generate_letter(req: GenerateLetterRequest, request: Request):
     user_content = f"Резюме соискателя:\n{req.resume_text[:6000]}\n\n---\nВакансия:\n{vacancy_str}\n\nСгенерируй сопроводительное письмо к этой вакансии."
 
     try:
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model="deepseek-chat",
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -479,7 +490,7 @@ async def analyze_resume(req: AnalyzeResumeRequest, request: Request):
     if not req.resume_text.strip():
         raise HTTPException(status_code=400, detail="Резюме пустое")
 
-    client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
+    client = AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
 
     prompt = """Проанализируй резюме соискателя и составь поисковые запросы для поиска вакансий на hh.ru.
 
@@ -500,7 +511,7 @@ fullstack разработчик
 Без пояснений, без нумерации, без кавычек — только 5 запросов, каждый на отдельной строке."""
 
     try:
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model="deepseek-chat",
             messages=[{"role": "user", "content": f"Резюме:\n{req.resume_text[:8000]}\n\n{prompt}"}],
             max_tokens=150,
@@ -769,6 +780,11 @@ async def mass_apply_sse(req: MassApplyRequest, request: Request):
                 send({"type": "no_credits", "index": idx, "total": total})
                 break
 
+            limit_info = db.get_daily_limit_info(user_id)
+            if limit_info["is_blocked"]:
+                send({"type": "daily_limit", "index": idx, "total": total, "daily_limit": limit_info})
+                break
+
             send({"type": "progress", "index": idx, "total": total, "vacancy_id": vid, "step": "checking"})
 
             if _mass_apply_cancel.is_set():
@@ -933,6 +949,10 @@ async def track_apply(req: TrackApplyRequest, request: Request):
     db_status = "applied" if req.status in ("sent", "cover_letter_filled", "already_applied") else req.status
 
     if req.status in ("sent", "cover_letter_filled"):
+        limit_info = db.get_daily_limit_info(user_id)
+        if limit_info["is_blocked"]:
+            return {"ok": False, "error": "daily_limit", "daily_limit": limit_info,
+                    "credits": db.get_user_credits(user_id)}
         if not db.deduct_credit(user_id):
             raise HTTPException(status_code=403, detail="Недостаточно откликов. Пополните баланс.")
 
@@ -940,11 +960,70 @@ async def track_apply(req: TrackApplyRequest, request: Request):
                       f"https://hh.ru/vacancy/{vid}", "extension", user_id=user_id,
                       location=req.location)
     db.update_vacancy_status(vid, db_status, user_id)
+    db.bump_vacancy_found_at(vid, user_id)
     if req.status not in ("no_button", "test_required"):
         db.log_application(vid, req.cover_letter[:500] if req.cover_letter else "",
                           req.status, req.error, user_id=user_id)
     remaining = db.get_user_credits(user_id)
-    return {"ok": True, "credits": remaining}
+    daily = db.get_daily_limit_info(user_id)
+    return {"ok": True, "credits": remaining, "daily_limit": daily}
+
+
+class TrackApplyBatchRequest(BaseModel):
+    items: list[dict] = []
+
+
+@app.post("/api/db/track-apply-batch")
+async def track_apply_batch(req: TrackApplyBatchRequest, request: Request):
+    user = _require_user(request)
+    user_id = user["id"]
+    results = []
+    stopped_reason = None
+
+    for item in req.items[:500]:
+        vid = str(item.get("vacancy_id", ""))
+        if not vid:
+            continue
+        status = item.get("status", "sent")
+        db_status = "applied" if status in ("sent", "cover_letter_filled", "already_applied") else status
+
+        if status in ("sent", "cover_letter_filled"):
+            limit_info = db.get_daily_limit_info(user_id)
+            if limit_info["is_blocked"]:
+                stopped_reason = "daily_limit"
+                results.append({"vacancy_id": vid, "ok": False, "error": "daily_limit"})
+                break
+            if not db.deduct_credit(user_id):
+                stopped_reason = "no_credits"
+                results.append({"vacancy_id": vid, "ok": False, "error": "no_credits"})
+                break
+
+        try:
+            db.upsert_vacancy(vid, item.get("title", ""), item.get("company", ""),
+                              None, None, "",
+                              f"https://hh.ru/vacancy/{vid}", "extension",
+                              user_id=user_id, location=item.get("location", ""))
+            db.update_vacancy_status(vid, db_status, user_id)
+            db.bump_vacancy_found_at(vid, user_id)
+            if status not in ("no_button", "test_required"):
+                db.log_application(vid, (item.get("cover_letter") or "")[:500],
+                                   status, item.get("error", ""), user_id=user_id)
+            results.append({"vacancy_id": vid, "ok": True})
+        except Exception as e:
+            logger.error("batch track-apply failed for %s: %s", vid, e)
+            results.append({"vacancy_id": vid, "ok": False, "error": str(e)})
+
+    remaining = db.get_user_credits(user_id)
+    user_fresh = db.get_user_by_id(user_id)
+    daily = db.get_daily_limit_info(user_id)
+    return {
+        "ok": True,
+        "results": results,
+        "stopped_reason": stopped_reason,
+        "credits": remaining,
+        "subscription_expires_at": user_fresh.get("subscription_expires_at") if user_fresh else None,
+        "daily_limit": daily,
+    }
 
 
 @app.post("/api/db/vacancy-statuses")

@@ -2,13 +2,14 @@
   "manifest_version": 3,
   "name": "HH AutoPilot — Автоотклик на вакансии",
   "version": "2.0.0",
-  "description": "Автоматические отклики на hh.ru с AI-сопроводительными письмами. Работает через proplatforma.ru/hh",
+  "description": "Автоматические отклики на hh.ru с AI-сопроводительными письмами. Работает через klikbot.ru",
   "permissions": ["tabs", "storage", "activeTab", "scripting"],
   "host_permissions": [
     "https://hh.ru/*",
     "https://*.hh.ru/*",
-    "https://proplatforma.ru/*",
-    "http://proplatforma.ru/*"
+    "https://klikbot.ru/*",
+    "https://*.klikbot.ru/*",
+    "http://localhost:5173/*"
   ],
   "action": {
     "default_popup": "popup.html"
@@ -23,7 +24,7 @@
       "run_at": "document_idle"
     },
     {
-      "matches": ["http://proplatforma.ru/hh*", "https://proplatforma.ru/hh*"],
+      "matches": ["https://klikbot.ru/*", "https://www.klikbot.ru/*", "http://localhost:5173/*"],
       "js": ["bridge.js"],
       "run_at": "document_idle"
     }

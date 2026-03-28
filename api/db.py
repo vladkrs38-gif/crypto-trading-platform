@@ -3,7 +3,7 @@ import sqlite3
 import json
 import threading
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 DB_PATH = Path(__file__).parent / "hh.db"
@@ -192,7 +192,9 @@ def get_user_by_id(user_id: int) -> Optional[dict]:
 
 
 def deduct_credit(user_id: int) -> bool:
-    """Deduct 1 credit. Returns False if insufficient."""
+    """Deduct 1 credit. Subscription users skip deduction. Returns False if no credits and no subscription."""
+    if has_active_subscription(user_id):
+        return True
     conn = _get_conn()
     cur = conn.execute(
         "UPDATE users SET credits = credits - 1 WHERE id = ? AND credits > 0",
@@ -273,10 +275,10 @@ def upsert_vacancy(hh_id: str, title: str, company: str,
     """Insert vacancy if not exists for this user. Returns True if newly inserted."""
     conn = _get_conn()
     existing = conn.execute(
-        "SELECT id FROM vacancies WHERE hh_id = ? AND user_id = ?", (hh_id, user_id)
+        "SELECT id, location FROM vacancies WHERE hh_id = ? AND user_id = ?", (hh_id, user_id)
     ).fetchone()
     if existing:
-        if location and not existing.get("location" if isinstance(existing, dict) else 0):
+        if location and not existing["location"]:
             conn.execute("UPDATE vacancies SET location = ? WHERE hh_id = ? AND user_id = ?",
                          (location, hh_id, user_id))
             conn.commit()
@@ -550,21 +552,29 @@ def get_all_active_auto_configs() -> list[dict]:
     return result
 
 
+def has_active_subscription(user_id: int) -> bool:
+    """Return True if user has a non-expired subscription."""
+    user = get_user_by_id(user_id)
+    if not user:
+        return False
+    sub_expires = user.get("subscription_expires_at")
+    if not sub_expires:
+        return False
+    try:
+        return datetime.fromisoformat(sub_expires) > datetime.now()
+    except (ValueError, TypeError):
+        return False
+
+
 def check_user_can_apply(user_id: int) -> tuple[bool, str]:
-    """Check if user has credits and active subscription. Returns (can_apply, reason)."""
+    """Check if user can apply. Active subscription = unlimited. Otherwise need credits."""
     user = get_user_by_id(user_id)
     if not user:
         return False, "user_not_found"
+    if has_active_subscription(user_id):
+        return True, "ok"
     if user["credits"] <= 0:
         return False, "no_credits"
-    sub_expires = user.get("subscription_expires_at")
-    if sub_expires:
-        try:
-            expires_dt = datetime.fromisoformat(sub_expires)
-            if expires_dt < datetime.now():
-                return False, "subscription_expired"
-        except (ValueError, TypeError):
-            pass
     return True, "ok"
 
 
@@ -573,5 +583,40 @@ def set_subscription(user_id: int, expires_at: Optional[str]):
     conn.execute(
         "UPDATE users SET subscription_expires_at = ? WHERE id = ?",
         (expires_at, user_id),
+    )
+    conn.commit()
+
+
+# --------------- Daily Limit (hh.ru: 200/day) ---------------
+
+HH_DAILY_LIMIT = 200
+
+
+def get_daily_limit_info(user_id: int) -> dict:
+    """Return daily application limit info. hh.ru allows max 200 applications per day."""
+    conn = _get_conn()
+    today = datetime.now().strftime("%Y-%m-%d")
+    used = conn.execute(
+        "SELECT COUNT(*) as c FROM applications WHERE user_id = ? AND applied_at >= ? "
+        "AND status IN ('sent', 'cover_letter_filled')",
+        (user_id, today),
+    ).fetchone()["c"]
+    remaining = max(0, HH_DAILY_LIMIT - used)
+    tomorrow = (datetime.now() + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return {
+        "used_today": used,
+        "limit": HH_DAILY_LIMIT,
+        "remaining": remaining,
+        "is_blocked": used >= HH_DAILY_LIMIT,
+        "reset_at": tomorrow.isoformat(),
+    }
+
+
+def bump_vacancy_found_at(hh_id: str, user_id: int = 0):
+    """Update found_at to now so the vacancy appears fresh."""
+    conn = _get_conn()
+    conn.execute(
+        "UPDATE vacancies SET found_at = datetime('now') WHERE hh_id = ? AND user_id = ?",
+        (hh_id, user_id),
     )
     conn.commit()

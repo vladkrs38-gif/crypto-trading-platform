@@ -39,3 +39,123 @@ input, select, textarea {
 input:focus, select:focus, textarea:focus {
   @apply ring-accent/40 border-accent/50 outline-none;
 }
+
+/* ===== Landing Page Animations ===== */
+
+html { scroll-behavior: smooth; }
+
+/* Scroll-reveal */
+.reveal {
+  opacity: 0;
+  transform: translateY(32px);
+  transition: opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1),
+              transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.reveal.revealed {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.reveal-d1 { transition-delay: 80ms; }
+.reveal-d2 { transition-delay: 160ms; }
+.reveal-d3 { transition-delay: 240ms; }
+.reveal-d4 { transition-delay: 320ms; }
+.reveal-d5 { transition-delay: 400ms; }
+.reveal-d6 { transition-delay: 480ms; }
+.reveal-d7 { transition-delay: 560ms; }
+.reveal-d8 { transition-delay: 640ms; }
+
+/* Hero staggered entrance */
+@keyframes heroFadeIn {
+  from { opacity: 0; transform: translateY(24px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.hero-enter {
+  opacity: 0;
+  animation: heroFadeIn 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+.hero-enter-d1 { animation-delay: 100ms; }
+.hero-enter-d2 { animation-delay: 220ms; }
+.hero-enter-d3 { animation-delay: 380ms; }
+.hero-enter-d4 { animation-delay: 520ms; }
+
+/* CTA button pulse-glow */
+@keyframes pulseGlow {
+  0%, 100% { box-shadow: 0 8px 32px rgba(249, 115, 22, 0.30); }
+  50%      { box-shadow: 0 8px 48px rgba(249, 115, 22, 0.55); }
+}
+.cta-glow { animation: pulseGlow 2.8s ease-in-out infinite; }
+
+/* Floating cards */
+@keyframes floatY {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-12px); }
+}
+.float-y       { animation: floatY 4s ease-in-out infinite; }
+.float-y-delay { animation: floatY 4s ease-in-out 1.5s infinite; }
+
+/* Card hover lift */
+.card-hover {
+  transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
+}
+.card-hover:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+}
+
+/* FAQ answer expand/collapse */
+.faq-answer {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height 0.4s cubic-bezier(0.16, 1, 0.3, 1),
+              opacity 0.3s ease;
+}
+.faq-answer.open {
+  max-height: 480px;
+  opacity: 1;
+}
+
+/* Hero background glow */
+.hero-glow {
+  background: radial-gradient(ellipse 720px 480px at 50% 38%, rgba(249,115,22,0.11) 0%, transparent 68%);
+  pointer-events: none;
+}
+
+/* Landing: фон как на макетах (#0a0a0a + мягкие блики) */
+.landing-page {
+  background-color: #0a0a0a;
+  color: #fff;
+}
+.landing-page::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 80% 50% at 15% 20%, rgba(249, 115, 22, 0.08) 0%, transparent 55%),
+    radial-gradient(ellipse 70% 45% at 85% 30%, rgba(139, 92, 246, 0.06) 0%, transparent 50%),
+    radial-gradient(ellipse 60% 40% at 50% 100%, rgba(59, 130, 246, 0.04) 0%, transparent 45%);
+}
+.landing-page > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Градиент заголовка «это то, что решает всё» — розовый → фиолетовый */
+.text-gradient-letter {
+  background: linear-gradient(90deg, #f472b6 0%, #a78bfa 45%, #818cf8 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Подсветка абзаца в AI-письме (жёлтый фон, чёрный текст) */
+.letter-highlight {
+  background: #facc15;
+  color: #0a0a0a;
+  font-weight: 600;
+  padding: 0.06em 0.2em;
+  border-radius: 0.2em;
+}
